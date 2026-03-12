@@ -1,0 +1,196 @@
+<script>
+  const state = {
+    bootstrap: null,
+    clients: [],
+    activeModule: 'dashboard',
+    trustOpsResult: null
+  };
+
+  document.addEventListener('DOMContentLoaded', initApp);
+
+  function initApp() {
+    google.script.run
+      .withSuccessHandler(function(data) {
+        state.bootstrap = data;
+        renderNav(data.modules || []);
+        bindEvents();
+        loadClients();
+      })
+      .withFailureHandler(showError)
+      .WD_getBootstrapData();
+  }
+
+  function bindEvents() {
+    document.getElementById('refreshClientsBtn').addEventListener('click', loadClients);
+    document.getElementById('generateTrustOpsBtn').addEventListener('click', generateTrustOps);
+    document.getElementById('copyMessageBtn').addEventListener('click', copyMessage);
+  }
+
+  function renderNav(modules) {
+    const nav = document.getElementById('navList');
+    nav.innerHTML = '';
+
+    modules.forEach(function(mod) {
+      const btn = document.createElement('button');
+      btn.className = 'nav-item' + (mod.id === state.activeModule ? ' active' : '');
+      btn.type = 'button';
+      btn.textContent = mod.label;
+      btn.addEventListener('click', function() {
+        setActiveModule(mod.id, mod.label);
+      });
+      nav.appendChild(btn);
+    });
+  }
+
+  function setActiveModule(moduleId, label) {
+    state.activeModule = moduleId;
+    document.querySelectorAll('.module-pane').forEach(function(el) {
+      el.classList.remove('active');
+    });
+    document.querySelectorAll('.nav-item').forEach(function(el) {
+      el.classList.remove('active');
+    });
+
+    const target = document.getElementById('module-' + moduleId);
+    if (target) target.classList.add('active');
+
+    const matchingNav = Array.from(document.querySelectorAll('.nav-item'))
+      .find(btn => btn.textContent === label);
+    if (matchingNav) matchingNav.classList.add('active');
+
+    document.getElementById('pageTitle').textContent = label;
+  }
+
+  function loadClients() {
+    const select = document.getElementById('clientSelect');
+    select.innerHTML = '<option value="">Loading clients...</option>';
+
+    google.script.run
+      .withSuccessHandler(function(clients) {
+        state.clients = clients || [];
+        renderClients();
+      })
+      .withFailureHandler(showError)
+      .WD_getClients();
+  }
+
+  function renderClients() {
+    const select = document.getElementById('clientSelect');
+    select.innerHTML = '<option value="">Select Client</option>';
+
+    state.clients.forEach(function(client) {
+      const opt = document.createElement('option');
+      opt.value = client;
+      opt.textContent = client;
+      select.appendChild(opt);
+    });
+  }
+
+  function generateTrustOps() {
+    const payload = {
+      clientName: document.getElementById('clientSelect').value,
+      clientType: document.getElementById('clientType').value,
+      projectPlanLink: document.getElementById('projectPlanLink').value,
+      evidenceDropLink: document.getElementById('evidenceDropLink').value,
+      cloudSecIncluded: document.getElementById('cloudSecIncluded').checked
+    };
+
+    if (!payload.clientName) {
+      alert('Please select a client first.');
+      return;
+    }
+
+    document.body.classList.add('loading');
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        document.body.classList.remove('loading');
+        state.trustOpsResult = result;
+        renderTrustOpsResult(result);
+      })
+      .withFailureHandler(function(err) {
+        document.body.classList.remove('loading');
+        showError(err);
+      })
+      .WD_generateTrustOpsV2A(payload);
+  }
+
+  function renderTrustOpsResult(result) {
+    const meta = document.getElementById('resultsMeta');
+    meta.textContent = 'Outstanding tests found: ' + result.count;
+
+    document.getElementById('formattedOutput').value = result.textOutput || '';
+    document.getElementById('formattedPreview').innerHTML = result.htmlOutput || '';
+
+    const wrap = document.getElementById('resultsTableWrap');
+
+    if (!result.tests || !result.tests.length) {
+      wrap.innerHTML = '<div class="empty-state">No outstanding tests found.</div>';
+      return;
+    }
+
+    const rows = result.tests.map(function(test) {
+      const entities = test.failingEntityCount
+        ? (test.showEntityListInline
+            ? escapeHtml(test.failingEntities.join(', '))
+            : (test.failingEntityCount + ' items'))
+        : '-';
+
+      return `
+        <tr>
+          <td>
+            ${test.link ? `<a href="${escapeHtml(test.link)}" target="_blank">${escapeHtml(test.name)}</a>` : escapeHtml(test.name)}
+          </td>
+          <td><span class="pill outstanding">${escapeHtml(test.normalizedStatus)}</span></td>
+          <td>${escapeHtml(test.dueLabel || '-')}</td>
+          <td>${escapeHtml(String(test.failingEntityCount || 0))}</td>
+          <td>${entities}</td>
+        </tr>
+      `;
+    }).join('');
+
+    wrap.innerHTML = `
+      <table class="results-table">
+        <thead>
+          <tr>
+            <th>Test</th>
+            <th>Status</th>
+            <th>Due</th>
+            <th>Failing Count</th>
+            <th>Failing Entities</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  async function copyMessage() {
+    const val = document.getElementById('formattedOutput').value || '';
+    if (!val) {
+      alert('Nothing to copy yet.');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(val);
+      alert('Message copied.');
+    } catch (e) {
+      alert('Copy failed. Please copy manually.');
+    }
+  }
+
+  function showError(err) {
+    console.error(err);
+    alert((err && err.message) ? err.message : String(err));
+  }
+
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+</script>
