@@ -9,6 +9,10 @@ const APP_CONFIG = {
   CENTRAL_API_SPREADSHEET_ID: '',
   CENTRAL_API_SHEET_NAME: 'Central API Sheet',
 
+  // Client metadata DB (project plan links, evidence drop, ops lead, frameworks, etc.)
+  CLIENT_DB_SPREADSHEET_ID: '16L5coACwK5yVAf3UiGavtqtSjcwOmvXDRN8KUCpNwjQ',
+  CLIENT_DB_SHEET_NAME: 'Sheet1',
+
   VANTA_API_BASE: 'https://api.vanta.com/v1',
   API_PAGE_SIZE: 100,
   RATE_LIMIT_MIN_MS: 400,

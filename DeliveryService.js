@@ -48,10 +48,22 @@ function WD_generateTrustOpsV2A(payload) {
   const projectPlanLink = String(payload.projectPlanLink || '').trim();
   const evidenceDropLink = String(payload.evidenceDropLink || '').trim();
   const cloudSecIncluded = !!payload.cloudSecIncluded;
+  const opsLead = String(payload.opsLead || '').trim();
+  const frameworks = String(payload.frameworks || '').trim();
 
   if (!clientName) {
     throw new Error('Client is required.');
   }
+
+  // Persist any metadata changes back to DB
+  WD_saveClientMetadata(clientName, {
+    clientType: clientType,
+    projectPlanLink: projectPlanLink,
+    evidenceDropLink: evidenceDropLink,
+    cloudSecIncluded: cloudSecIncluded,
+    opsLead: opsLead,
+    frameworks: frameworks
+  });
 
   const token = WD_getVantaAccessToken_(clientName);
   const tests = WD_fetchAllTests_(token);
@@ -88,6 +100,8 @@ function WD_generateTrustOpsV2A(payload) {
     projectPlanLink: projectPlanLink,
     evidenceDropLink: evidenceDropLink,
     cloudSecIncluded: cloudSecIncluded,
+    opsLead: opsLead,
+    frameworks: frameworks,
     tests: outstanding
   });
 
@@ -97,6 +111,8 @@ function WD_generateTrustOpsV2A(payload) {
     projectPlanLink: projectPlanLink,
     evidenceDropLink: evidenceDropLink,
     cloudSecIncluded: cloudSecIncluded,
+    opsLead: opsLead,
+    frameworks: frameworks,
     tests: outstanding
   });
 

@@ -116,6 +116,10 @@ function WD_pickBestTestUrl_(test) {
     if (val) return val;
   }
 
+  // Fallback: construct Vanta console URL from testId
+  const testId = String(test.id || test.testId || '').trim();
+  if (testId) return 'https://app.vanta.com/tests/' + testId;
+
   return '';
 }
 
@@ -150,6 +154,38 @@ function WD_escapeHtml_(str) {
     .replace(/'/g, '&#39;');
 }
 
+function WD_isPolicyAcceptanceTest_(name) {
+  return String(name || '').trim().toLowerCase().indexOf('personnel agree to') === 0;
+}
+
+function WD_groupPolicyTests_(tests) {
+  var policy = [];
+  var other = [];
+
+  tests.forEach(function(test) {
+    if (WD_isPolicyAcceptanceTest_(test.name)) {
+      policy.push(test);
+    } else {
+      other.push(test);
+    }
+  });
+
+  // Collect unique employee names across all policy tests
+  var seen = {};
+  var uniqueEmployees = [];
+  policy.forEach(function(test) {
+    (test.failingEntities || []).forEach(function(e) {
+      var key = String(e).trim().toLowerCase();
+      if (key && !seen[key]) {
+        seen[key] = true;
+        uniqueEmployees.push(String(e).trim());
+      }
+    });
+  });
+
+  return { policy: policy, other: other, uniqueEmployees: uniqueEmployees };
+}
+
 function WD_buildTrustOpsMessage_(ctx) {
   const lines = [];
 
@@ -166,8 +202,11 @@ function WD_buildTrustOpsMessage_(ctx) {
     return lines.join('\n');
   }
 
-  ctx.tests.forEach(function(test, idx) {
-    const base = (idx + 1) + '. ' + test.name +
+  const grouped = WD_groupPolicyTests_(ctx.tests);
+  var counter = 1;
+
+  grouped.other.forEach(function(test) {
+    const base = counter + '. ' + test.name +
       (test.link ? ' (' + test.link + ')' : '') +
       ' (' + test.dueLabel + ')';
 
@@ -175,14 +214,27 @@ function WD_buildTrustOpsMessage_(ctx) {
 
     if (test.failingEntityCount > 0) {
       if (test.showEntityListInline) {
-        lines.push('   - Failing entities (' + test.failingEntityCount + '): ' + test.failingEntities.join(', '));
+        lines.push('   - Failing entities (' + test.failingEntityCount + '):\n' + test.failingEntities.map(function(e) { return '     • ' + e; }).join('\n'));
       } else {
         lines.push('   - Failing entities: ' + test.failingEntityCount + ' items');
       }
     }
 
     lines.push('');
+    counter++;
   });
+
+  if (grouped.policy.length > 0) {
+    lines.push(counter + '. The following employees need to sign off on policies:');
+    if (grouped.uniqueEmployees.length > 0) {
+      grouped.uniqueEmployees.forEach(function(e) {
+        lines.push('   • ' + e);
+      });
+    } else {
+      lines.push('   (employee list unavailable)');
+    }
+    lines.push('');
+  }
 
   if (ctx.evidenceDropLink) {
     lines.push('Please upload screenshots / documents here: ' + ctx.evidenceDropLink);
@@ -214,9 +266,11 @@ function WD_buildTrustOpsHtml_(ctx) {
     return html.join('');
   }
 
+  const grouped = WD_groupPolicyTests_(ctx.tests);
+
   html.push('<ol class="output-list">');
 
-  ctx.tests.forEach(function(test) {
+  grouped.other.forEach(function(test) {
     html.push('<li>');
     if (test.link) {
       html.push('<a href="' + WD_escapeHtml_(test.link) + '" target="_blank">' + WD_escapeHtml_(test.name) + '</a>');
@@ -228,8 +282,9 @@ function WD_buildTrustOpsHtml_(ctx) {
 
     if (test.failingEntityCount > 0) {
       if (test.showEntityListInline) {
-        html.push('<ul><li><strong>Failing entities (' + test.failingEntityCount + '):</strong> ' +
-          WD_escapeHtml_(test.failingEntities.join(', ')) + '</li></ul>');
+        html.push('<ul><li><strong>Failing entities (' + test.failingEntityCount + '):</strong><ul>' +
+          test.failingEntities.map(function(e) { return '<li>' + WD_escapeHtml_(e) + '</li>'; }).join('') +
+          '</ul></li></ul>');
       } else {
         html.push('<ul><li><strong>Failing entities:</strong> ' +
           WD_escapeHtml_(String(test.failingEntityCount)) + ' items</li></ul>');
@@ -238,6 +293,18 @@ function WD_buildTrustOpsHtml_(ctx) {
 
     html.push('</li>');
   });
+
+  if (grouped.policy.length > 0) {
+    html.push('<li>The following employees need to sign off on policies:');
+    if (grouped.uniqueEmployees.length > 0) {
+      html.push('<ul>' +
+        grouped.uniqueEmployees.map(function(e) { return '<li>' + WD_escapeHtml_(e) + '</li>'; }).join('') +
+        '</ul>');
+    } else {
+      html.push('<ul><li><em>(employee list unavailable)</em></li></ul>');
+    }
+    html.push('</li>');
+  }
 
   html.push('</ol>');
 

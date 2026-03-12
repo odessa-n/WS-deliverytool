@@ -24,6 +24,7 @@
     document.getElementById('refreshClientsBtn').addEventListener('click', loadClients);
     document.getElementById('generateTrustOpsBtn').addEventListener('click', generateTrustOps);
     document.getElementById('copyMessageBtn').addEventListener('click', copyMessage);
+    document.getElementById('clientSelect').addEventListener('change', onClientChange);
   }
 
   function renderNav(modules) {
@@ -58,7 +59,6 @@
       .find(btn => btn.textContent === label);
     if (matchingNav) matchingNav.classList.add('active');
 
-    document.getElementById('pageTitle').textContent = label;
   }
 
   function loadClients() {
@@ -72,6 +72,62 @@
       })
       .withFailureHandler(showError)
       .WD_getClients();
+  }
+
+  function onClientChange() {
+    var clientName = document.getElementById('clientSelect').value;
+    if (!clientName) {
+      clearPrefillFields();
+      return;
+    }
+
+    setFieldsLoading(true);
+
+    google.script.run
+      .withSuccessHandler(function(meta) {
+        setFieldsLoading(false);
+        if (!meta) return;
+
+        // clientType: add option dynamically if it doesn't exist in the dropdown
+        if (meta.clientType) {
+          var sel = document.getElementById('clientType');
+          var exists = Array.from(sel.options).some(function(o) { return o.value === meta.clientType; });
+          if (!exists) {
+            var opt = document.createElement('option');
+            opt.value = meta.clientType;
+            opt.textContent = meta.clientType;
+            sel.appendChild(opt);
+          }
+          sel.value = meta.clientType;
+        }
+
+        if (meta.projectPlanLink) document.getElementById('projectPlanLink').value = meta.projectPlanLink;
+        if (meta.evidenceDropLink) document.getElementById('evidenceDropLink').value = meta.evidenceDropLink;
+        document.getElementById('cloudSecIncluded').checked = !!meta.cloudSecIncluded;
+        if (meta.opsLead) document.getElementById('opsLead').value = meta.opsLead;
+        if (meta.frameworks) document.getElementById('frameworks').value = meta.frameworks;
+      })
+      .withFailureHandler(function(err) {
+        setFieldsLoading(false);
+        console.error('Prefill failed:', err);
+      })
+      .WD_getClientMetadata(clientName);
+  }
+
+  function clearPrefillFields() {
+    document.getElementById('clientType').value = '';
+    document.getElementById('projectPlanLink').value = '';
+    document.getElementById('evidenceDropLink').value = '';
+    document.getElementById('cloudSecIncluded').checked = false;
+    document.getElementById('opsLead').value = '';
+    document.getElementById('frameworks').value = '';
+  }
+
+  function setFieldsLoading(loading) {
+    var fields = ['clientType', 'projectPlanLink', 'evidenceDropLink', 'opsLead', 'frameworks'];
+    fields.forEach(function(id) {
+      document.getElementById(id).style.opacity = loading ? '0.5' : '';
+    });
   }
 
   function renderClients() {
@@ -92,7 +148,9 @@
       clientType: document.getElementById('clientType').value,
       projectPlanLink: document.getElementById('projectPlanLink').value,
       evidenceDropLink: document.getElementById('evidenceDropLink').value,
-      cloudSecIncluded: document.getElementById('cloudSecIncluded').checked
+      cloudSecIncluded: document.getElementById('cloudSecIncluded').checked,
+      opsLead: document.getElementById('opsLead').value,
+      frameworks: document.getElementById('frameworks').value
     };
 
     if (!payload.clientName) {
@@ -132,7 +190,7 @@
     const rows = result.tests.map(function(test) {
       const entities = test.failingEntityCount
         ? (test.showEntityListInline
-            ? escapeHtml(test.failingEntities.join(', '))
+            ? test.failingEntities.map(function(e) { return escapeHtml(e); }).join('<br>')
             : (test.failingEntityCount + ' items'))
         : '-';
 

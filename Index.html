@@ -12,7 +12,7 @@
           <div class="brand-mark">▰</div>
           <div class="brand-text">
             <div class="brand-name">workstreet</div>
-            <div class="brand-sub">Delivery Tool</div>
+            <div class="brand-sub">Delivery Workspace</div>
           </div>
         </div>
 
@@ -20,22 +20,10 @@
 
         <div class="sidebar-footer">
           <div class="small-label">Workspace</div>
-          <div class="sidebar-note">Modern internal operations webapp</div>
         </div>
       </aside>
 
       <main class="workspace">
-        <header class="topbar">
-          <div>
-            <h1 id="pageTitle">Workstreet Delivery Tool</h1>
-            <p class="page-subtitle">Internal delivery workspace</p>
-          </div>
-
-          <div class="topbar-actions">
-            <button class="ghost-btn" id="refreshClientsBtn" type="button">Refresh Clients</button>
-          </div>
-        </header>
-
         <section id="module-dashboard" class="module-pane active">
           <div class="hero-card">
             <div class="hero-title">Welcome</div>
@@ -54,13 +42,14 @@
                   Pull outstanding Vanta tests, due dates, and failing entities into a formatted client-ready update.
                 </p>
               </div>
+              <button class="ghost-btn" id="refreshClientsBtn" type="button">Refresh Clients</button>
             </div>
 
             <div class="info-banner">
               This tool retrieves outstanding tests directly from Vanta using the selected client’s token.
             </div>
 
-            <div class="grid grid-2">
+            <div class="grid grid-3">
               <div class="field">
                 <label for="clientSelect">Client</label>
                 <select id="clientSelect">
@@ -72,12 +61,14 @@
                 <label for="clientType">Client Type</label>
                 <select id="clientType">
                   <option value="">Select Client Type</option>
-                  <option value="SOC 2">SOC 2</option>
-                  <option value="ISO 27001">ISO 27001</option>
-                  <option value="ISO 27701">ISO 27701</option>
-                  <option value="CloudSec">CloudSec</option>
-                  <option value="General">General</option>
+                  <option value="SPRINT">SPRINT</option>
+                  <option value="Engagement">Engagement</option>
                 </select>
+              </div>
+
+              <div class="field">
+                <label for="opsLead">Ops Lead</label>
+                <input id="opsLead" type="text" placeholder="Name..." />
               </div>
 
               <div class="field">
@@ -88,6 +79,11 @@
               <div class="field">
                 <label for="evidenceDropLink">Evidence Drop Folder Link</label>
                 <input id="evidenceDropLink" type="url" placeholder="https://..." />
+              </div>
+
+              <div class="field">
+                <label for="frameworks">Frameworks</label>
+                <input id="frameworks" type="text" placeholder="e.g. SOC 2, ISO 27001..." />
               </div>
             </div>
 
