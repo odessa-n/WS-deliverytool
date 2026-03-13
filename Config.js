@@ -1,7 +1,7 @@
 /** Config.gs **/
 
 const APP_CONFIG = {
-  APP_NAME: 'Workstreet Delivery Tool',
+  APP_NAME: 'Workstreet Delivery Workspace',
   TOKEN_SERVICE_URL: 'https://script.google.com/macros/s/AKfycbxrmN6Z6bge7xfVA1sb0EAFFb6-i6wXMkEWAIPEgiWrqCv7jtBMHko_P7IMBwVuSt9M_Q/exec',
 
   // Fallback only if the token service does not yet support ?action=clients
@@ -21,6 +21,6 @@ const APP_CONFIG = {
 
   BRAND: {
     logoText: 'workstreet',
-    productName: 'Workstreet Delivery Tool'
+    productName: 'Workstreet Delivery Workspace'
   }
 };

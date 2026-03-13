@@ -7,7 +7,8 @@ var DB_COLUMN_MAP = {
   evidenceDropLink: ['evidence drop folder link', 'evidence drop', 'evidencedroplink', 'evidence folder'],
   cloudSecIncluded: ['workstreet cloudsec', 'cloudsec', 'cloudsecincluded', 'cloud sec'],
   opsLead:          ['ops lead', 'opslead', 'ops_lead', 'operations lead'],
-  frameworks:       ['frameworks', 'framework', 'compliance frameworks']
+  frameworks:       ['frameworks', 'framework', 'compliance frameworks'],
+  clientStatus:     ['client status', 'clientstatus', 'status', 'active status']
 };
 
 var DB_REQUIRED_COLS = [
@@ -16,7 +17,8 @@ var DB_REQUIRED_COLS = [
   { key: 'evidenceDropLink', label: 'Evidence Drop Folder Link', aliases: DB_COLUMN_MAP.evidenceDropLink },
   { key: 'cloudSecIncluded', label: 'Workstreet CloudSec',       aliases: DB_COLUMN_MAP.cloudSecIncluded },
   { key: 'opsLead',          label: 'Ops Lead',                  aliases: DB_COLUMN_MAP.opsLead },
-  { key: 'frameworks',       label: 'Frameworks',                aliases: DB_COLUMN_MAP.frameworks }
+  { key: 'frameworks',       label: 'Frameworks',                aliases: DB_COLUMN_MAP.frameworks },
+  { key: 'clientStatus',     label: 'Client Status',             aliases: DB_COLUMN_MAP.clientStatus }
 ];
 
 function WD_getClientMetadata(clientName) {
@@ -44,7 +46,8 @@ function WD_getClientMetadata(clientName) {
           evidenceDropLink: WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.evidenceDropLink),
           cloudSecIncluded: WD_dbParseBool_(WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.cloudSecIncluded)),
           opsLead:          WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.opsLead),
-          frameworks:       WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.frameworks)
+          frameworks:       WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.frameworks),
+          clientStatus:     WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.clientStatus) || 'Active'
         };
       }
     }
@@ -62,7 +65,7 @@ function WD_saveClientMetadata(clientName, data) {
     var allData = sheet.getDataRange().getValues();
 
     if (allData.length === 0) {
-      sheet.appendRow(['Client', 'Client Type', 'Project Plan Link', 'Evidence Drop Folder Link', 'Workstreet CloudSec', 'Ops Lead', 'Frameworks']);
+      sheet.appendRow(['Client', 'Client Type', 'Project Plan Link', 'Evidence Drop Folder Link', 'Workstreet CloudSec', 'Ops Lead', 'Frameworks', 'Client Status']);
       allData = sheet.getDataRange().getValues();
     }
 
@@ -97,7 +100,8 @@ function WD_saveClientMetadata(clientName, data) {
       evidenceDropLink: data.evidenceDropLink || '',
       cloudSecIncluded: data.cloudSecIncluded ? 'TRUE' : 'FALSE',
       opsLead:          data.opsLead || '',
-      frameworks:       data.frameworks || ''
+      frameworks:       data.frameworks || '',
+      clientStatus:     data.clientStatus || 'Active'
     };
 
     // Find existing row
@@ -127,6 +131,44 @@ function WD_saveClientMetadata(clientName, data) {
   } catch(e) {
     Logger.log('WD_saveClientMetadata error: ' + e.toString());
   }
+}
+
+/**
+ * Batch-reads the entire ClientDB sheet into a lowercase-keyed map.
+ * Returns { [clientNameLower]: { clientName, clientType, clientStatus, ... } }
+ * Used by WD_getActiveClients() and CM_getAllClientsWithMetadata().
+ */
+function WD_readAllClientDb_() {
+  var result = {};
+  if (!APP_CONFIG.CLIENT_DB_SPREADSHEET_ID) return result;
+  try {
+    var ss    = SpreadsheetApp.openById(APP_CONFIG.CLIENT_DB_SPREADSHEET_ID);
+    var sheet = ss.getSheetByName(APP_CONFIG.CLIENT_DB_SHEET_NAME) || ss.getSheets()[0];
+    var data  = sheet.getDataRange().getValues();
+    if (data.length < 2) return result;
+
+    var headers      = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var clientColIdx = WD_dbFindColIdx_(headers, DB_COLUMN_MAP.clientName);
+    if (clientColIdx === -1) return result;
+
+    for (var i = 1; i < data.length; i++) {
+      var rowClient = String(data[i][clientColIdx] || '').trim();
+      if (!rowClient) continue;
+      result[rowClient.toLowerCase()] = {
+        clientName:      rowClient,
+        clientType:      WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.clientType),
+        projectPlanLink: WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.projectPlanLink),
+        evidenceDropLink:WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.evidenceDropLink),
+        cloudSecIncluded:WD_dbParseBool_(WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.cloudSecIncluded)),
+        opsLead:         WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.opsLead),
+        frameworks:      WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.frameworks),
+        clientStatus:    WD_dbGetColValue_(data[i], headers, DB_COLUMN_MAP.clientStatus) || 'Active'
+      };
+    }
+  } catch(e) {
+    Logger.log('WD_readAllClientDb_ error: ' + e.toString());
+  }
+  return result;
 }
 
 function WD_dbFindColIdx_(headers, aliases) {

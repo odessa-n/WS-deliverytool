@@ -23,6 +23,7 @@ function WD_mapTestRecord_(test) {
   const link = WD_pickBestTestUrl_(test);
 
   return {
+    itemType: 'Automated Test',
     testId: String(test.id || test.testId || '').trim(),
     name: name,
     link: link,
@@ -35,6 +36,36 @@ function WD_mapTestRecord_(test) {
     failingEntityCount: 0,
     showEntityListInline: false,
     raw: test
+  };
+}
+
+function WD_mapDocumentRecord_(doc) {
+  const name = String(doc.name || doc.title || doc.documentName || '').trim();
+
+  const link = String(
+    doc.webUrl ||
+    doc.url ||
+    doc.link ||
+    doc.consoleUrl ||
+    ''
+  ).trim();
+
+  const rawStatus = String(doc.status || '').trim();
+
+  return {
+    itemType: 'Document',
+    testId: String(doc.id || doc.documentId || '').trim(),
+    name: name,
+    link: link,
+    rawStatus: rawStatus,
+    normalizedStatus: 'Outstanding',
+    dueDate: '',
+    dueLabel: 'No due date',
+    shouldFetchEntities: false,
+    failingEntities: [],
+    failingEntityCount: 0,
+    showEntityListInline: false,
+    raw: doc
   };
 }
 
@@ -214,9 +245,9 @@ function WD_buildTrustOpsMessage_(ctx) {
 
     if (test.failingEntityCount > 0) {
       if (test.showEntityListInline) {
-        lines.push('   - Failing entities (' + test.failingEntityCount + '):\n' + test.failingEntities.map(function(e) { return '     • ' + e; }).join('\n'));
+        test.failingEntities.forEach(function(e) { lines.push('   • ' + e); });
       } else {
-        lines.push('   - Failing entities: ' + test.failingEntityCount + ' items');
+        lines.push('   Failing entities: ' + test.failingEntityCount + ' items');
       }
     }
 
@@ -233,6 +264,17 @@ function WD_buildTrustOpsMessage_(ctx) {
     } else {
       lines.push('   (employee list unavailable)');
     }
+    lines.push('');
+  }
+
+  if (ctx.documents && ctx.documents.length) {
+    lines.push('Documents pending:');
+    lines.push('');
+    ctx.documents.forEach(function(doc, i) {
+      lines.push((i + 1) + '. ' + doc.name +
+        (doc.link ? ' (' + doc.link + ')' : '') +
+        (doc.rawStatus ? ' [' + doc.rawStatus + ']' : ''));
+    });
     lines.push('');
   }
 
@@ -282,12 +324,12 @@ function WD_buildTrustOpsHtml_(ctx) {
 
     if (test.failingEntityCount > 0) {
       if (test.showEntityListInline) {
-        html.push('<ul><li><strong>Failing entities (' + test.failingEntityCount + '):</strong><ul>' +
+        html.push('<ul>' +
           test.failingEntities.map(function(e) { return '<li>' + WD_escapeHtml_(e) + '</li>'; }).join('') +
-          '</ul></li></ul>');
+          '</ul>');
       } else {
-        html.push('<ul><li><strong>Failing entities:</strong> ' +
-          WD_escapeHtml_(String(test.failingEntityCount)) + ' items</li></ul>');
+        html.push('<p style="margin:2px 0 0 0;font-size:12px;color:#555;">Failing entities: ' +
+          WD_escapeHtml_(String(test.failingEntityCount)) + ' items</p>');
       }
     }
 
@@ -307,6 +349,24 @@ function WD_buildTrustOpsHtml_(ctx) {
   }
 
   html.push('</ol>');
+
+  if (ctx.documents && ctx.documents.length) {
+    html.push('<h4>Documents pending:</h4>');
+    html.push('<ol class="output-list">');
+    ctx.documents.forEach(function(doc) {
+      html.push('<li>');
+      if (doc.link) {
+        html.push('<a href="' + WD_escapeHtml_(doc.link) + '" target="_blank">' + WD_escapeHtml_(doc.name) + '</a>');
+      } else {
+        html.push('<span>' + WD_escapeHtml_(doc.name) + '</span>');
+      }
+      if (doc.rawStatus) {
+        html.push(' <em>(' + WD_escapeHtml_(doc.rawStatus) + ')</em>');
+      }
+      html.push('</li>');
+    });
+    html.push('</ol>');
+  }
 
   if (ctx.evidenceDropLink) {
     html.push('<p>Please upload screenshots / documents <a href="' +

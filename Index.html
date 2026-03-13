@@ -16,10 +16,11 @@
           </div>
         </div>
 
+        <div class="nav-section-label">Tools</div>
         <nav class="nav-list" id="navList"></nav>
 
         <div class="sidebar-footer">
-          <div class="small-label">Workspace</div>
+          <div class="small-label">Workstreet · Delivery</div>
         </div>
       </aside>
 
@@ -82,8 +83,16 @@
               </div>
 
               <div class="field">
-                <label for="frameworks">Frameworks</label>
-                <input id="frameworks" type="text" placeholder="e.g. SOC 2, ISO 27001..." />
+                <label>Frameworks</label>
+                <div class="ms-wrap" id="frameworksMsWrap">
+                  <button type="button" class="ms-trigger" id="frameworksMsTrigger" disabled>
+                    <span id="frameworksMsText">Select a client first</span>
+                    <span class="ms-caret">▾</span>
+                  </button>
+                  <div class="ms-dropdown" id="frameworksMsDropdown">
+                    <div id="frameworksMsOptions" class="ms-options"></div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -120,6 +129,460 @@
               <textarea id="formattedOutput" class="output-textarea" placeholder="Generated message will appear here..."></textarea>
               <div id="formattedPreview" class="formatted-preview"></div>
             </div>
+          </div>
+        </section>
+
+        <section id="module-test-monitoring" class="module-pane">
+
+          <!-- Header row: title + refresh controls -->
+          <div class="panel tm-header-panel">
+            <div class="tm-header-left">
+              <h2>Test Monitoring</h2>
+              <p>Outstanding tests and documents across all clients, pulled from Vanta and cached for instant access.</p>
+            </div>
+            <div class="tm-header-right">
+              <span class="tm-last-refresh-label" id="tmLastRefresh">Last refresh: —</span>
+              <button class="ghost-btn" id="tmRefreshSelectedBtn" type="button" disabled>Refresh Selected</button>
+              <button class="primary-btn" id="tmRefreshBtn" type="button">Refresh All from Vanta</button>
+            </div>
+          </div>
+
+          <!-- Summary stat cards -->
+          <div class="tm-stats-row" id="tmStatsRow">
+            <div class="tm-stat-card tm-stat-warn">
+              <div class="tm-stat-val" id="tmStatOutTests">—</div>
+              <div class="tm-stat-lbl">Outstanding Tests</div>
+            </div>
+            <div class="tm-stat-card tm-stat-danger">
+              <div class="tm-stat-val" id="tmStatOutDocs">—</div>
+              <div class="tm-stat-lbl">Outstanding Documents</div>
+            </div>
+            <div class="tm-stat-card tm-stat-info">
+              <div class="tm-stat-val" id="tmStatAvgPct">—</div>
+              <div class="tm-stat-lbl">Avg. Completion</div>
+            </div>
+            <div class="tm-stat-card tm-stat-warn">
+              <div class="tm-stat-val" id="tmStatBelow70">—</div>
+              <div class="tm-stat-lbl">Clients Below 70%</div>
+            </div>
+          </div>
+
+          <!-- Search + filter bar -->
+          <div class="panel tm-controls-panel">
+            <input type="text" id="tmSearch" class="tm-search" placeholder="Search clients or frameworks…" />
+          </div>
+
+          <!-- Table -->
+          <div class="panel" style="padding:0; overflow:hidden;">
+            <div class="table-wrap tm-table-wrap" style="overflow-x:auto;">
+              <table class="results-table tm-table">
+                <thead>
+                  <tr>
+                    <th class="tm-cb-th"><input type="checkbox" id="tmSelectAll" title="Select all" /></th>
+                    <th class="tm-th-sort" data-sort="clientName">Client</th>
+                    <th class="tm-th-sort" data-sort="frameworks">Frameworks</th>
+                    <th class="tm-th-sort" data-sort="outTests">Outstanding Tests</th>
+                    <th class="tm-th-sort" data-sort="testPct">Test %</th>
+                    <th class="tm-th-sort" data-sort="outDocs">Outstanding Docs</th>
+                    <th class="tm-th-sort" data-sort="docPct">Doc %</th>
+                    <th class="tm-th-sort" data-sort="totalOut">Total Outstanding</th>
+                    <th class="tm-th-sort" data-sort="totalScope">Total In-Scope</th>
+                    <th class="tm-th-sort" data-sort="completedPct">% Completed</th>
+                  </tr>
+                </thead>
+                <tbody id="tmTableBody">
+                  <tr><td colspan="9" class="tm-empty-cell">Loading…</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="tm-pagination" id="tmPagination"></div>
+          </div>
+
+        </section>
+
+        <section id="module-client-management" class="module-pane">
+
+          <!-- Header -->
+          <div class="panel cm-header-panel">
+            <div class="cm-header-left">
+              <h2>Client Management</h2>
+              <p>Manage client records, status, and metadata. Active clients appear in Trust Ops and Test Monitoring.</p>
+            </div>
+            <div class="cm-header-right">
+              <button class="ghost-btn" id="cmRefreshBtn" type="button">Refresh from Central API</button>
+            </div>
+          </div>
+
+          <!-- Search + filter bar -->
+          <div class="panel cm-controls-panel">
+            <input type="text" id="cmSearch" class="cm-search" placeholder="Search clients…" />
+            <div class="cm-filter-group">
+              <button class="cm-filter-btn active" data-filter="all">All</button>
+              <button class="cm-filter-btn" data-filter="active">Active</button>
+              <button class="cm-filter-btn" data-filter="inactive">Inactive</button>
+            </div>
+          </div>
+
+          <!-- Table -->
+          <div class="panel" style="padding:0; overflow:hidden;">
+            <div class="table-wrap cm-table-wrap" style="overflow-x:auto;">
+              <table class="results-table cm-table">
+                <thead>
+                  <tr>
+                    <th class="tm-th-sort" data-sort-cm="clientName">Client</th>
+                    <th class="tm-th-sort" data-sort-cm="clientStatus">Status</th>
+                    <th class="tm-th-sort" data-sort-cm="clientType">Client Type</th>
+                    <th class="tm-th-sort" data-sort-cm="opsLead">Ops Lead</th>
+                    <th class="tm-th-sort" data-sort-cm="frameworks">Frameworks</th>
+                    <th class="cm-actions-th">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="cmTableBody">
+                  <tr><td colspan="6" class="tm-empty-cell">Loading…</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="tm-pagination" id="cmPagination"></div>
+          </div>
+
+        </section>
+
+        <section id="module-framework-explorer" class="module-pane">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Framework Explorer</h2>
+                <p>Browse frameworks, controls, tests, and documents in a client's Vanta instance.</p>
+              </div>
+            </div>
+            <div class="grid grid-3">
+              <div class="field">
+                <label for="fxClientSelect">Client</label>
+                <select id="fxClientSelect">
+                  <option value="">Select Client</option>
+                </select>
+              </div>
+            </div>
+            <div class="button-row">
+              <button id="loadFrameworksBtn" class="primary-btn" type="button">Load Frameworks</button>
+            </div>
+          </div>
+
+          <div class="fx-panels">
+            <div class="panel fx-col">
+              <div class="panel-head tight">
+                <h3>Frameworks</h3>
+                <span class="fx-badge" id="fxFrameworkCount"></span>
+              </div>
+              <div id="fxFrameworksList" class="fx-list">
+                <div class="empty-state">Select a client and load frameworks.</div>
+              </div>
+            </div>
+
+            <div class="panel fx-col">
+              <div class="panel-head tight">
+                <h3>Controls</h3>
+                <span class="fx-badge" id="fxControlCount"></span>
+              </div>
+              <div id="fxControlsList" class="fx-list">
+                <div class="empty-state">Select a framework to see its controls.</div>
+              </div>
+            </div>
+
+            <div class="panel fx-col">
+              <div class="panel-head tight">
+                <h3>Tests &amp; Documents</h3>
+                <span class="fx-badge" id="fxDetailCount"></span>
+              </div>
+              <div id="fxDetailsList" class="fx-list">
+                <div class="empty-state">Select a control to see its tests and documents.</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="module-drive-utility" class="module-pane">
+          <div class="du-grid">
+
+            <!-- LEFT: Controls -->
+            <div class="du-card">
+              <div class="du-card-h">
+                <h2>Actions</h2>
+                <div class="du-badge" id="du-modeBadge">rename</div>
+              </div>
+              <div class="du-card-b">
+
+                <div class="du-tabs">
+                  <button class="du-tabBtn active" id="du-tabBtn-rename" onclick="duSetTab('rename')">Rename Files</button>
+                  <button class="du-tabBtn" id="du-tabBtn-logo" onclick="duSetTab('logo')">Add Logo</button>
+                  <button class="du-tabBtn" id="du-tabBtn-pdf" onclick="duSetTab('pdf')">Convert to PDF</button>
+                  <button class="du-tabBtn" id="du-tabBtn-dochistory" onclick="duSetTab('dochistory')">Update Doc History</button>
+                  <button class="du-tabBtn" id="du-tabBtn-parser" onclick="duSetTab('parser')">Policy Register</button>
+                </div>
+
+                <!-- TAB: Rename Files -->
+                <div id="du-tab-rename" class="du-tab-pane">
+                  <div class="du-split">
+                    <div>
+                      <label class="du-label">Folder URL <span class="du-hint">Drive folder link or ID</span></label>
+                      <input id="du-rename-folderUrl" type="url" placeholder="https://drive.google.com/drive/folders/..." />
+                    </div>
+                    <div class="du-row">
+                      <div>
+                        <label class="du-label">Mode <span class="du-hint">single or multi</span></label>
+                        <select id="du-rename-mode" onchange="duRenameToggleMode()">
+                          <option value="single">Single replacement</option>
+                          <option value="multi">Multiple replacements</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label class="du-label">Run Type <span class="du-hint">preview vs apply</span></label>
+                        <select id="du-rename-runType">
+                          <option value="preview">Preview (dry run)</option>
+                          <option value="apply">Apply changes</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div id="du-rename-single">
+                      <div class="du-row">
+                        <div>
+                          <label class="du-label">Find <span class="du-hint">literal match</span></label>
+                          <input id="du-rename-find" placeholder="[Draft]" />
+                        </div>
+                        <div>
+                          <label class="du-label">Replace with <span class="du-hint">can be blank</span></label>
+                          <input id="du-rename-replace" placeholder="[Final]" />
+                        </div>
+                      </div>
+                    </div>
+                    <div id="du-rename-multi" style="display:none">
+                      <label class="du-label">Replacement pairs <span class="du-hint">find=&gt;replace, find2=&gt;replace2</span></label>
+                      <textarea id="du-rename-pairs" placeholder="[Draft]=>[Final], 2024=>2025"></textarea>
+                    </div>
+                    <div class="du-controls">
+                      <label class="du-check"><input type="checkbox" id="du-rename-subfolders" /> Include subfolders</label>
+                      <label class="du-check"><input type="checkbox" id="du-rename-folders" /> Rename folders too</label>
+                      <label class="du-check"><input type="checkbox" id="du-rename-caseInsensitive" /> Case-insensitive</label>
+                    </div>
+                    <div class="du-actions">
+                      <button class="du-btn du-btn-primary" onclick="duRun('rename')">Run</button>
+                      <button class="du-btn du-btn-ghost" onclick="duResetTab('rename')">Reset</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- TAB: Logo Only -->
+                <div id="du-tab-logo" class="du-tab-pane" style="display:none">
+                  <div class="du-split">
+                    <div class="du-row">
+                      <div>
+                        <label class="du-label">Mode <span class="du-hint">folder or files</span></label>
+                        <select id="du-logo-mode" onchange="duLogoToggleMode()">
+                          <option value="folder">Folder</option>
+                          <option value="files">Specific Files</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label class="du-label">Run Type <span class="du-hint">preview vs apply</span></label>
+                        <select id="du-logo-runType">
+                          <option value="preview">Preview (dry run)</option>
+                          <option value="apply">Apply changes</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label class="du-label">Logo File URL <span class="du-hint">Drive file link or ID</span></label>
+                      <input id="du-logo-logoUrl" type="url" placeholder="https://drive.google.com/file/d/..." />
+                    </div>
+                    <div id="du-logo-folder-row">
+                      <label class="du-label">Folder URL <span class="du-hint">Drive folder link or ID</span></label>
+                      <input id="du-logo-folderUrl" type="url" placeholder="https://drive.google.com/drive/folders/..." />
+                    </div>
+                    <div id="du-logo-files-row" style="display:none">
+                      <label class="du-label">File URLs <span class="du-hint">one per line</span></label>
+                      <textarea id="du-logo-fileUrls" placeholder="https://docs.google.com/document/d/..."></textarea>
+                    </div>
+                    <div class="du-controls">
+                      <label class="du-check" id="du-logo-subfolders-row"><input type="checkbox" id="du-logo-subfolders" /> Include subfolders</label>
+                      <label class="du-check"><input type="checkbox" id="du-logo-replace" /> Replace existing images</label>
+                    </div>
+                    <div class="du-actions">
+                      <button class="du-btn du-btn-primary" onclick="duRun('logo')">Run</button>
+                      <button class="du-btn du-btn-ghost" onclick="duResetTab('logo')">Reset</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- TAB: Convert to PDF -->
+                <div id="du-tab-pdf" class="du-tab-pane" style="display:none">
+                  <div class="du-split">
+                    <div class="du-row">
+                      <div>
+                        <label class="du-label">Mode <span class="du-hint">folder or files</span></label>
+                        <select id="du-pdf-mode" onchange="duPdfToggleMode()">
+                          <option value="folder">Folder</option>
+                          <option value="files">Specific Files</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label class="du-label">Run Type <span class="du-hint">preview vs apply</span></label>
+                        <select id="du-pdf-runType">
+                          <option value="preview">Preview (dry run)</option>
+                          <option value="apply">Apply changes</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div id="du-pdf-folder-row">
+                      <label class="du-label">Folder URL <span class="du-hint">Drive folder link or ID</span></label>
+                      <input id="du-pdf-folderUrl" type="url" placeholder="https://drive.google.com/drive/folders/..." />
+                    </div>
+                    <div id="du-pdf-files-row" style="display:none">
+                      <label class="du-label">File URLs <span class="du-hint">one per line</span></label>
+                      <textarea id="du-pdf-fileUrls" placeholder="https://docs.google.com/document/d/..."></textarea>
+                    </div>
+                    <div>
+                      <label class="du-label">Output Folder URL <span class="du-hint">optional — auto-created if blank</span></label>
+                      <input id="du-pdf-outputFolderUrl" type="url" placeholder="https://drive.google.com/drive/folders/..." />
+                    </div>
+                    <div class="du-controls">
+                      <label class="du-check" id="du-pdf-subfolders-row"><input type="checkbox" id="du-pdf-subfolders" /> Include subfolders</label>
+                      <label class="du-check"><input type="checkbox" id="du-pdf-overwrite" /> Overwrite existing PDFs</label>
+                    </div>
+                    <div class="du-actions">
+                      <button class="du-btn du-btn-primary" onclick="duRun('pdf')">Run</button>
+                      <button class="du-btn du-btn-ghost" onclick="duResetTab('pdf')">Reset</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- TAB: Update Doc History -->
+                <div id="du-tab-dochistory" class="du-tab-pane" style="display:none">
+                  <div class="du-split">
+                    <div class="du-row">
+                      <div>
+                        <label class="du-label">Mode <span class="du-hint">folder or files</span></label>
+                        <select id="du-dh-mode" onchange="duDhToggleMode()">
+                          <option value="folder">Folder</option>
+                          <option value="files">Specific Files</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label class="du-label">Run Type <span class="du-hint">preview vs apply</span></label>
+                        <select id="du-dh-runType">
+                          <option value="preview">Preview (dry run)</option>
+                          <option value="apply">Apply changes</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div id="du-dh-folder-row">
+                      <label class="du-label">Folder URL <span class="du-hint">Drive folder link or ID</span></label>
+                      <input id="du-dh-folderUrl" type="url" placeholder="https://drive.google.com/drive/folders/..." />
+                    </div>
+                    <div id="du-dh-files-row" style="display:none">
+                      <label class="du-label">File URLs <span class="du-hint">one per line</span></label>
+                      <textarea id="du-dh-fileUrls" placeholder="https://docs.google.com/document/d/..."></textarea>
+                    </div>
+                    <div class="du-row">
+                      <div>
+                        <label class="du-label">Current Version <span class="du-hint">existing row e.g. 1.2</span></label>
+                        <input id="du-dh-currentVersion" placeholder="1.0" oninput="duDhComputeVersion()" />
+                      </div>
+                      <div>
+                        <label class="du-label">Change Type</label>
+                        <select id="du-dh-changeType" onchange="duDhComputeVersion()">
+                          <option value="minor">Minor (1.x → 1.x+1)</option>
+                          <option value="major">Major (x.0 → x+1.0)</option>
+                          <option value="nochange">No Change</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div>
+                      <label class="du-label">New Version <span class="du-hint">auto-computed — override if needed</span></label>
+                      <input id="du-dh-newVersion" placeholder="1.1" />
+                    </div>
+                    <div>
+                      <label class="du-label">Date <span class="du-hint">leave blank to skip</span></label>
+                      <input id="du-dh-date" type="date" />
+                    </div>
+                    <div>
+                      <label class="du-label">Description <span class="du-hint">auto-filled on No Change</span></label>
+                      <input id="du-dh-description" placeholder="Leave blank to skip" />
+                    </div>
+                    <div class="du-row">
+                      <div>
+                        <label class="du-label">Written by <span class="du-hint">leave blank to skip</span></label>
+                        <input id="du-dh-writtenBy" placeholder="Name" />
+                      </div>
+                      <div>
+                        <label class="du-label">Approved by <span class="du-hint">leave blank to skip</span></label>
+                        <input id="du-dh-approvedBy" placeholder="Name" />
+                      </div>
+                    </div>
+                    <div class="du-controls">
+                      <label class="du-check" id="du-dh-subfolders-row"><input type="checkbox" id="du-dh-subfolders" /> Include subfolders</label>
+                      <label class="du-check"><input type="checkbox" id="du-dh-addIfMissing" checked /> Add row if version missing</label>
+                    </div>
+                    <div class="du-actions">
+                      <button class="du-btn du-btn-primary" onclick="duRun('dochistory')">Run</button>
+                      <button class="du-btn du-btn-ghost" onclick="duResetTab('dochistory')">Reset</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- TAB: Folder Parser -->
+                <div id="du-tab-parser" class="du-tab-pane" style="display:none">
+                  <div class="du-split">
+                    <div class="du-row">
+                      <div>
+                        <label class="du-label">Folder URL <span class="du-hint">Drive folder link or ID</span></label>
+                        <input id="du-fp-folderUrl" type="url" placeholder="https://drive.google.com/drive/folders/..." />
+                      </div>
+                      <div>
+                        <label class="du-label">Client Name <span class="du-hint">used in sheet name</span></label>
+                        <input id="du-fp-clientName" placeholder="e.g. Acme Corp" />
+                      </div>
+                    </div>
+                    <div class="du-row">
+                      <div>
+                        <label class="du-label">Output Folder URL <span class="du-hint">optional</span></label>
+                        <input id="du-fp-outputFolderUrl" type="url" placeholder="Defaults to source folder..." />
+                      </div>
+                      <div>
+                        <label class="du-label">Custom Sheet Name <span class="du-hint">optional override</span></label>
+                        <input id="du-fp-sheetName" placeholder="[Client] Policy Review (Year)" />
+                      </div>
+                    </div>
+                    <div class="du-controls">
+                      <label class="du-check"><input type="checkbox" id="du-fp-subfolders" /> Include subfolders</label>
+                    </div>
+                    <div class="du-actions">
+                      <button class="du-btn du-btn-primary" onclick="duRun('parser')">Generate Register</button>
+                      <button class="du-btn du-btn-ghost" onclick="duResetTab('parser')">Reset</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Shared Status Bar -->
+                <div class="du-status" id="du-status">
+                  <span id="du-statusText">Ready.</span>
+                  <div class="du-badge" id="du-statusBadge">idle</div>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- RIGHT: Result -->
+            <div class="du-card">
+              <div class="du-card-h">
+                <h2>Result</h2>
+                <div class="du-badge" id="du-resultBadge">—</div>
+              </div>
+              <div class="du-card-b">
+                <pre id="du-output">(nothing yet)</pre>
+                <div class="du-mini">Shows up to 200 items.</div>
+              </div>
+            </div>
+
           </div>
         </section>
 

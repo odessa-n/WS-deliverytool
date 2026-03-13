@@ -3,7 +3,20 @@
     bootstrap: null,
     clients: [],
     activeModule: 'dashboard',
-    trustOpsResult: null
+    trustOpsResult: null,
+    toFx: {
+      frameworks: [],     // [{id, name}] loaded from Vanta for the selected client
+      loaded: false,      // true once frameworks have been fetched for current client
+      loading: false,     // true while fetching
+      storedNames: ''     // names from ClientDB prefill, used to auto-check on load
+    },
+    fx: {
+      clientName: null,
+      frameworks: [],
+      selectedFrameworkId: null,
+      controls: [],
+      selectedControlId: null
+    }
   };
 
   document.addEventListener('DOMContentLoaded', initApp);
@@ -25,6 +38,18 @@
     document.getElementById('generateTrustOpsBtn').addEventListener('click', generateTrustOps);
     document.getElementById('copyMessageBtn').addEventListener('click', copyMessage);
     document.getElementById('clientSelect').addEventListener('change', onClientChange);
+    document.getElementById('loadFrameworksBtn').addEventListener('click', fxLoadFrameworks);
+
+    // Framework multi-select toggle
+    document.getElementById('frameworksMsTrigger').addEventListener('click', toFxToggleDropdown);
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', function(e) {
+      var wrap = document.getElementById('frameworksMsWrap');
+      if (wrap && !wrap.contains(e.target)) {
+        toFxCloseDropdown();
+      }
+    });
   }
 
   function renderNav(modules) {
@@ -71,7 +96,7 @@
         renderClients();
       })
       .withFailureHandler(showError)
-      .WD_getClients();
+      .WD_getActiveClients();
   }
 
   function onClientChange() {
@@ -80,6 +105,15 @@
       clearPrefillFields();
       return;
     }
+
+    // Reset framework multi-select for the new client
+    state.toFx.frameworks = [];
+    state.toFx.loaded = false;
+    state.toFx.loading = false;
+    state.toFx.storedNames = '';
+    toFxSetTriggerLabel('Loading...');
+    document.getElementById('frameworksMsTrigger').disabled = false;
+    toFxCloseDropdown();
 
     setFieldsLoading(true);
 
@@ -105,7 +139,11 @@
         if (meta.evidenceDropLink) document.getElementById('evidenceDropLink').value = meta.evidenceDropLink;
         document.getElementById('cloudSecIncluded').checked = !!meta.cloudSecIncluded;
         if (meta.opsLead) document.getElementById('opsLead').value = meta.opsLead;
-        if (meta.frameworks) document.getElementById('frameworks').value = meta.frameworks;
+        // Store framework names for auto-check once dropdown loads
+        if (meta.frameworks) {
+          state.toFx.storedNames = meta.frameworks;
+          toFxSetTriggerLabel(meta.frameworks);
+        }
       })
       .withFailureHandler(function(err) {
         setFieldsLoading(false);
@@ -120,29 +158,43 @@
     document.getElementById('evidenceDropLink').value = '';
     document.getElementById('cloudSecIncluded').checked = false;
     document.getElementById('opsLead').value = '';
-    document.getElementById('frameworks').value = '';
+    state.toFx.frameworks = [];
+    state.toFx.loaded = false;
+    state.toFx.storedNames = '';
+    toFxSetTriggerLabel('Select a client first');
+    document.getElementById('frameworksMsTrigger').disabled = true;
+    document.getElementById('frameworksMsOptions').innerHTML = '';
   }
 
   function setFieldsLoading(loading) {
-    var fields = ['clientType', 'projectPlanLink', 'evidenceDropLink', 'opsLead', 'frameworks'];
+    var fields = ['clientType', 'projectPlanLink', 'evidenceDropLink', 'opsLead'];
     fields.forEach(function(id) {
       document.getElementById(id).style.opacity = loading ? '0.5' : '';
     });
   }
 
   function renderClients() {
-    const select = document.getElementById('clientSelect');
-    select.innerHTML = '<option value="">Select Client</option>';
+    var selects = [
+      document.getElementById('clientSelect'),
+      document.getElementById('fxClientSelect')
+    ];
 
-    state.clients.forEach(function(client) {
-      const opt = document.createElement('option');
-      opt.value = client;
-      opt.textContent = client;
-      select.appendChild(opt);
+    selects.forEach(function(select) {
+      if (!select) return;
+      var currentVal = select.value;
+      select.innerHTML = '<option value="">Select Client</option>';
+      state.clients.forEach(function(client) {
+        var opt = document.createElement('option');
+        opt.value = client;
+        opt.textContent = client;
+        select.appendChild(opt);
+      });
+      if (currentVal) select.value = currentVal;
     });
   }
 
   function generateTrustOps() {
+    var selected = toFxGetSelected();
     const payload = {
       clientName: document.getElementById('clientSelect').value,
       clientType: document.getElementById('clientType').value,
@@ -150,7 +202,8 @@
       evidenceDropLink: document.getElementById('evidenceDropLink').value,
       cloudSecIncluded: document.getElementById('cloudSecIncluded').checked,
       opsLead: document.getElementById('opsLead').value,
-      frameworks: document.getElementById('frameworks').value
+      selectedFrameworkIds: selected.ids,
+      selectedFrameworkNames: selected.names
     };
 
     if (!payload.clientName) {
@@ -175,33 +228,38 @@
 
   function renderTrustOpsResult(result) {
     const meta = document.getElementById('resultsMeta');
-    meta.textContent = 'Outstanding tests found: ' + result.count;
+    const items = result.items || result.tests || [];
+    meta.textContent = 'Outstanding items found: ' + result.count +
+      ' (' + (result.tests ? result.tests.length : 0) + ' tests, ' +
+      (result.items ? result.items.length - (result.tests ? result.tests.length : 0) : 0) + ' documents)';
 
     document.getElementById('formattedOutput').value = result.textOutput || '';
     document.getElementById('formattedPreview').innerHTML = result.htmlOutput || '';
 
     const wrap = document.getElementById('resultsTableWrap');
 
-    if (!result.tests || !result.tests.length) {
-      wrap.innerHTML = '<div class="empty-state">No outstanding tests found.</div>';
+    if (!items.length) {
+      wrap.innerHTML = '<div class="empty-state">No outstanding items found.</div>';
       return;
     }
 
-    const rows = result.tests.map(function(test) {
-      const entities = test.failingEntityCount
-        ? (test.showEntityListInline
-            ? test.failingEntities.map(function(e) { return escapeHtml(e); }).join('<br>')
-            : (test.failingEntityCount + ' items'))
+    const rows = items.map(function(item) {
+      const isDoc = item.itemType === 'Document';
+      const entities = !isDoc && item.failingEntityCount
+        ? (item.showEntityListInline
+            ? item.failingEntities.map(function(e) { return escapeHtml(e); }).join('<br>')
+            : (item.failingEntityCount + ' items'))
         : '-';
 
       return `
         <tr>
           <td>
-            ${test.link ? `<a href="${escapeHtml(test.link)}" target="_blank">${escapeHtml(test.name)}</a>` : escapeHtml(test.name)}
+            ${item.link ? `<a href="${escapeHtml(item.link)}" target="_blank">${escapeHtml(item.name)}</a>` : escapeHtml(item.name)}
           </td>
-          <td><span class="pill outstanding">${escapeHtml(test.normalizedStatus)}</span></td>
-          <td>${escapeHtml(test.dueLabel || '-')}</td>
-          <td>${escapeHtml(String(test.failingEntityCount || 0))}</td>
+          <td><span class="pill ${isDoc ? 'doc-type' : 'outstanding'}">${escapeHtml(item.itemType || 'Automated Test')}</span></td>
+          <td><span class="pill outstanding">${escapeHtml(item.normalizedStatus)}</span></td>
+          <td>${escapeHtml(item.dueLabel || '-')}</td>
+          <td>${isDoc ? '-' : escapeHtml(String(item.failingEntityCount || 0))}</td>
           <td>${entities}</td>
         </tr>
       `;
@@ -211,7 +269,8 @@
       <table class="results-table">
         <thead>
           <tr>
-            <th>Test</th>
+            <th>Name</th>
+            <th>Type</th>
             <th>Status</th>
             <th>Due</th>
             <th>Failing Count</th>
@@ -251,4 +310,1551 @@
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
   }
+
+  // ── Trust Ops Framework Multi-Select ────────────────────────────────────────
+
+  function toFxToggleDropdown() {
+    var trigger = document.getElementById('frameworksMsTrigger');
+    var dropdown = document.getElementById('frameworksMsDropdown');
+    var isOpen = dropdown.classList.contains('open');
+
+    if (isOpen) {
+      toFxCloseDropdown();
+      return;
+    }
+
+    // Lazy-load frameworks on first open
+    if (!state.toFx.loaded && !state.toFx.loading) {
+      var clientName = document.getElementById('clientSelect').value;
+      if (!clientName) return;
+      toFxFetchFrameworks(clientName);
+    }
+
+    trigger.classList.add('open');
+    dropdown.classList.add('open');
+  }
+
+  function toFxCloseDropdown() {
+    document.getElementById('frameworksMsTrigger').classList.remove('open');
+    document.getElementById('frameworksMsDropdown').classList.remove('open');
+  }
+
+  function toFxFetchFrameworks(clientName) {
+    state.toFx.loading = true;
+    document.getElementById('frameworksMsOptions').innerHTML =
+      '<div class="ms-empty">Loading frameworks...</div>';
+    document.getElementById('frameworksMsTrigger').classList.add('open');
+    document.getElementById('frameworksMsDropdown').classList.add('open');
+
+    google.script.run
+      .withSuccessHandler(function(frameworks) {
+        state.toFx.frameworks = frameworks || [];
+        state.toFx.loaded = true;
+        state.toFx.loading = false;
+        toFxRenderOptions();
+      })
+      .withFailureHandler(function(err) {
+        state.toFx.loading = false;
+        document.getElementById('frameworksMsOptions').innerHTML =
+          '<div class="ms-empty">Error loading frameworks.</div>';
+        console.error('Framework load error:', err);
+      })
+      .WD_getFrameworks(clientName);
+  }
+
+  function toFxRenderOptions() {
+    var container = document.getElementById('frameworksMsOptions');
+    var frameworks = state.toFx.frameworks;
+
+    if (!frameworks.length) {
+      container.innerHTML = '<div class="ms-empty">No frameworks found.</div>';
+      toFxUpdateTriggerLabel();
+      return;
+    }
+
+    // Build stored names set for auto-check matching
+    var storedSet = {};
+    if (state.toFx.storedNames) {
+      state.toFx.storedNames.split(',').forEach(function(n) {
+        storedSet[n.trim().toLowerCase()] = true;
+      });
+    }
+
+    container.innerHTML = '';
+    frameworks.forEach(function(fw) {
+      var isChecked = storedSet[fw.name.trim().toLowerCase()] || false;
+
+      var label = document.createElement('label');
+      label.className = 'ms-option';
+
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = fw.id;
+      cb.dataset.name = fw.name;
+      cb.checked = isChecked;
+      cb.addEventListener('change', toFxUpdateTriggerLabel);
+
+      var span = document.createElement('span');
+      span.className = 'ms-option-label';
+      span.textContent = fw.name;
+
+      label.appendChild(cb);
+      label.appendChild(span);
+      container.appendChild(label);
+    });
+
+    toFxUpdateTriggerLabel();
+  }
+
+  function toFxGetSelected() {
+    var checkboxes = document.querySelectorAll('#frameworksMsOptions input[type="checkbox"]:checked');
+    var ids = [], names = [];
+    checkboxes.forEach(function(cb) {
+      ids.push(cb.value);
+      names.push(cb.dataset.name);
+    });
+    return { ids: ids, names: names };
+  }
+
+  function toFxUpdateTriggerLabel() {
+    var selected = toFxGetSelected();
+    toFxSetTriggerLabel(
+      selected.names.length ? selected.names.join(', ') : 'All frameworks (no filter)'
+    );
+  }
+
+  function toFxSetTriggerLabel(text) {
+    document.getElementById('frameworksMsText').textContent = text;
+  }
+
+  // ── End Trust Ops Framework Multi-Select ────────────────────────────────────
+
+  // ── Framework Explorer ──────────────────────────────────────────────────────
+
+  function fxLoadFrameworks() {
+    var clientName = document.getElementById('fxClientSelect').value;
+    if (!clientName) {
+      alert('Please select a client first.');
+      return;
+    }
+
+    state.fx.clientName = clientName;
+    state.fx.selectedFrameworkId = null;
+    state.fx.selectedControlId = null;
+    state.fx.frameworks = [];
+    state.fx.controls = [];
+
+    fxSetList('fxFrameworksList', null, 'Loading frameworks...');
+    fxSetList('fxControlsList', null, 'Select a framework to see its controls.');
+    fxSetList('fxDetailsList', null, 'Select a control to see its tests and documents.');
+    fxSetBadge('fxFrameworkCount', '');
+    fxSetBadge('fxControlCount', '');
+    fxSetBadge('fxDetailCount', '');
+
+    document.getElementById('loadFrameworksBtn').disabled = true;
+
+    google.script.run
+      .withSuccessHandler(function(frameworks) {
+        document.getElementById('loadFrameworksBtn').disabled = false;
+        state.fx.frameworks = frameworks || [];
+        fxRenderFrameworks();
+      })
+      .withFailureHandler(function(err) {
+        document.getElementById('loadFrameworksBtn').disabled = false;
+        fxSetList('fxFrameworksList', null, 'Error: ' + (err.message || String(err)));
+      })
+      .WD_getFrameworks(clientName);
+  }
+
+  function fxRenderFrameworks() {
+    var frameworks = state.fx.frameworks;
+    fxSetBadge('fxFrameworkCount', frameworks.length ? String(frameworks.length) : '');
+
+    if (!frameworks.length) {
+      fxSetList('fxFrameworksList', null, 'No frameworks found.');
+      return;
+    }
+
+    var list = document.getElementById('fxFrameworksList');
+    list.innerHTML = '';
+
+    frameworks.forEach(function(fw) {
+      var item = document.createElement('div');
+      item.className = 'fx-item';
+      item.innerHTML =
+        '<div class="fx-item-name">' + escapeHtml(fw.name) + '</div>' +
+        (fw.description ? '<div class="fx-item-desc">' + escapeHtml(fw.description) + '</div>' : '');
+      item.addEventListener('click', function() {
+        fxSelectFramework(fw);
+      });
+      list.appendChild(item);
+    });
+  }
+
+  function fxSelectFramework(fw) {
+    state.fx.selectedFrameworkId = fw.id;
+    state.fx.selectedControlId = null;
+    state.fx.controls = [];
+
+    // Highlight selected
+    Array.from(document.getElementById('fxFrameworksList').querySelectorAll('.fx-item'))
+      .forEach(function(el, i) {
+        el.classList.toggle('active', state.fx.frameworks[i] && state.fx.frameworks[i].id === fw.id);
+      });
+
+    fxSetList('fxControlsList', null, 'Loading controls...');
+    fxSetList('fxDetailsList', null, 'Select a control to see its tests and documents.');
+    fxSetBadge('fxControlCount', '');
+    fxSetBadge('fxDetailCount', '');
+
+    google.script.run
+      .withSuccessHandler(function(controls) {
+        state.fx.controls = controls || [];
+        fxRenderControls();
+      })
+      .withFailureHandler(function(err) {
+        fxSetList('fxControlsList', null, 'Error: ' + (err.message || String(err)));
+      })
+      .WD_getFrameworkControls({ clientName: state.fx.clientName, frameworkId: fw.id });
+  }
+
+  function fxRenderControls() {
+    var controls = state.fx.controls;
+    fxSetBadge('fxControlCount', controls.length ? String(controls.length) : '');
+
+    if (!controls.length) {
+      fxSetList('fxControlsList', null, 'No controls found for this framework.');
+      return;
+    }
+
+    var list = document.getElementById('fxControlsList');
+    list.innerHTML = '';
+
+    controls.forEach(function(ctrl) {
+      var item = document.createElement('div');
+      item.className = 'fx-item';
+      item.innerHTML =
+        '<div class="fx-item-name">' + escapeHtml(ctrl.name) + '</div>' +
+        (ctrl.description ? '<div class="fx-item-desc">' + escapeHtml(ctrl.description) + '</div>' : '');
+      item.addEventListener('click', function() {
+        fxSelectControl(ctrl);
+      });
+      list.appendChild(item);
+    });
+  }
+
+  function fxSelectControl(ctrl) {
+    state.fx.selectedControlId = ctrl.id;
+
+    // Highlight selected
+    Array.from(document.getElementById('fxControlsList').querySelectorAll('.fx-item'))
+      .forEach(function(el, i) {
+        el.classList.toggle('active', state.fx.controls[i] && state.fx.controls[i].id === ctrl.id);
+      });
+
+    fxSetList('fxDetailsList', null, 'Loading tests and documents...');
+    fxSetBadge('fxDetailCount', '');
+
+    google.script.run
+      .withSuccessHandler(function(details) {
+        fxRenderDetails(details);
+      })
+      .withFailureHandler(function(err) {
+        fxSetList('fxDetailsList', null, 'Error: ' + (err.message || String(err)));
+      })
+      .WD_getControlDetails({ clientName: state.fx.clientName, controlId: ctrl.id });
+  }
+
+  function fxRenderDetails(details) {
+    var tests = (details && details.tests) || [];
+    var docs = (details && details.documents) || [];
+    var total = tests.length + docs.length;
+
+    fxSetBadge('fxDetailCount', total ? String(total) : '');
+
+    var list = document.getElementById('fxDetailsList');
+    list.innerHTML = '';
+
+    if (!tests.length && !docs.length) {
+      list.innerHTML = '<div class="empty-state">No tests or documents found.</div>';
+      return;
+    }
+
+    if (tests.length) {
+      var tLabel = document.createElement('div');
+      tLabel.className = 'fx-section-label';
+      tLabel.textContent = 'Tests (' + tests.length + ')';
+      list.appendChild(tLabel);
+
+      tests.forEach(function(t) {
+        var item = document.createElement('div');
+        item.className = 'fx-detail-item';
+        item.innerHTML =
+          '<div>' + escapeHtml(t.name) + '</div>' +
+          (t.status ? '<span class="fx-status">' + escapeHtml(t.status) + '</span>' : '');
+        list.appendChild(item);
+      });
+    }
+
+    if (docs.length) {
+      var dLabel = document.createElement('div');
+      dLabel.className = 'fx-section-label';
+      dLabel.textContent = 'Documents (' + docs.length + ')';
+      list.appendChild(dLabel);
+
+      docs.forEach(function(d) {
+        var item = document.createElement('div');
+        item.className = 'fx-detail-item';
+        if (d.url) {
+          item.innerHTML = '<a href="' + escapeHtml(d.url) + '" target="_blank">' + escapeHtml(d.name) + '</a>';
+        } else {
+          item.innerHTML = '<div>' + escapeHtml(d.name) + '</div>';
+        }
+        if (d.type) {
+          item.innerHTML += '<div class="fx-item-desc">' + escapeHtml(d.type) + '</div>';
+        }
+        list.appendChild(item);
+      });
+    }
+  }
+
+  function fxSetList(id, items, emptyMsg) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = '<div class="empty-state">' + escapeHtml(emptyMsg || '') + '</div>';
+  }
+
+  function fxSetBadge(id, text) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    el.style.display = text ? '' : 'none';
+  }
+
+  // ── End Framework Explorer ──────────────────────────────────────────────────
+
+  // ── Drive Utility ────────────────────────────────────────────────────────────
+
+  var DU_TABS = ['rename', 'logo', 'pdf', 'dochistory', 'parser'];
+
+  function duSetTab(tabId) {
+    DU_TABS.forEach(function(id) {
+      var pane = document.getElementById('du-tab-' + id);
+      if (pane) pane.style.display = id === tabId ? '' : 'none';
+      var btn = document.getElementById('du-tabBtn-' + id);
+      if (btn) btn.classList.toggle('active', id === tabId);
+    });
+    var badge = document.getElementById('du-modeBadge');
+    if (badge) badge.textContent = tabId;
+    // Pre-fill today's date when switching to doc history tab
+    if (tabId === 'dochistory') {
+      var dateEl = document.getElementById('du-dh-date');
+      if (dateEl && !dateEl.value) {
+        var today = new Date();
+        dateEl.value = today.getFullYear() + '-' +
+          String(today.getMonth() + 1).padStart(2, '0') + '-' +
+          String(today.getDate()).padStart(2, '0');
+      }
+    }
+    document.getElementById('du-output').textContent = '(nothing yet)';
+    var resultBadge = document.getElementById('du-resultBadge');
+    if (resultBadge) resultBadge.textContent = '—';
+    var statusEl = document.getElementById('du-status');
+    if (statusEl) statusEl.className = 'du-status';
+    var statusText = document.getElementById('du-statusText');
+    if (statusText) statusText.textContent = 'Ready.';
+    var statusBadge = document.getElementById('du-statusBadge');
+    if (statusBadge) statusBadge.textContent = 'idle';
+  }
+
+  function duRenameToggleMode() {
+    var mode = document.getElementById('du-rename-mode').value;
+    document.getElementById('du-rename-single').style.display = mode === 'single' ? '' : 'none';
+    document.getElementById('du-rename-multi').style.display = mode === 'multi' ? '' : 'none';
+  }
+
+  function duLogoToggleMode() {
+    var mode = document.getElementById('du-logo-mode').value;
+    document.getElementById('du-logo-folder-row').style.display = mode === 'folder' ? '' : 'none';
+    document.getElementById('du-logo-files-row').style.display = mode === 'files' ? '' : 'none';
+    document.getElementById('du-logo-subfolders-row').style.display = mode === 'folder' ? '' : 'none';
+  }
+
+  function duPdfToggleMode() {
+    var mode = document.getElementById('du-pdf-mode').value;
+    document.getElementById('du-pdf-folder-row').style.display = mode === 'folder' ? '' : 'none';
+    document.getElementById('du-pdf-files-row').style.display = mode === 'files' ? '' : 'none';
+    document.getElementById('du-pdf-subfolders-row').style.display = mode === 'folder' ? '' : 'none';
+  }
+
+  function duDhToggleMode() {
+    var mode = document.getElementById('du-dh-mode').value;
+    document.getElementById('du-dh-folder-row').style.display = mode === 'folder' ? '' : 'none';
+    document.getElementById('du-dh-files-row').style.display = mode === 'files' ? '' : 'none';
+    document.getElementById('du-dh-subfolders-row').style.display = mode === 'folder' ? '' : 'none';
+  }
+
+  function duDhComputeVersion() {
+    var current = (document.getElementById('du-dh-currentVersion').value || '').trim();
+    var changeType = document.getElementById('du-dh-changeType').value;
+    var newVersionEl = document.getElementById('du-dh-newVersion');
+    var descEl = document.getElementById('du-dh-description');
+
+    // Auto-fill description on No Change (only if blank)
+    if (changeType === 'nochange' && !descEl.value.trim()) {
+      descEl.value = 'Annual Review. No Change.';
+    }
+
+    if (!current) { newVersionEl.value = ''; return; }
+
+    var parts = current.split('.').map(Number);
+    if (parts.some(isNaN)) { newVersionEl.value = current; return; }
+
+    if (changeType === 'minor') {
+      if (parts.length === 1) parts.push(1);
+      else parts[parts.length - 1]++;
+    } else if (changeType === 'major') {
+      parts[0]++;
+      for (var i = 1; i < parts.length; i++) parts[i] = 0;
+    }
+    // nochange: keep as-is
+
+    newVersionEl.value = parts.join('.');
+  }
+
+  function duResetTab(tool) {
+    var ids = {
+      rename: ['du-rename-folderUrl','du-rename-find','du-rename-replace','du-rename-pairs'],
+      logo:   ['du-logo-logoUrl','du-logo-folderUrl','du-logo-fileUrls'],
+      pdf:    ['du-pdf-folderUrl','du-pdf-fileUrls','du-pdf-outputFolderUrl'],
+      dochistory: ['du-dh-folderUrl','du-dh-fileUrls','du-dh-currentVersion','du-dh-newVersion','du-dh-date','du-dh-description','du-dh-writtenBy','du-dh-approvedBy'],
+      parser: ['du-fp-folderUrl','du-fp-clientName','du-fp-outputFolderUrl','du-fp-sheetName']
+    };
+    (ids[tool] || []).forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    document.getElementById('du-output').textContent = '(nothing yet)';
+    var resultBadge = document.getElementById('du-resultBadge');
+    if (resultBadge) resultBadge.textContent = '—';
+    var statusEl = document.getElementById('du-status');
+    if (statusEl) statusEl.className = 'du-status';
+    var statusText = document.getElementById('du-statusText');
+    if (statusText) statusText.textContent = 'Ready.';
+    var statusBadge = document.getElementById('du-statusBadge');
+    if (statusBadge) statusBadge.textContent = 'idle';
+  }
+
+  function duRun(tool) {
+    var runTypeId = tool === 'dochistory' ? 'du-dh-runType' : ('du-' + tool + '-runType');
+    var runTypeEl = document.getElementById(runTypeId);
+    var dryRun = runTypeEl ? runTypeEl.value === 'preview' : false;
+
+    var payload = {};
+    var fnName = '';
+
+    if (tool === 'rename') {
+      payload = {
+        folderUrl: document.getElementById('du-rename-folderUrl').value.trim(),
+        mode: document.getElementById('du-rename-mode').value,
+        findText: document.getElementById('du-rename-find').value,
+        replaceText: document.getElementById('du-rename-replace').value,
+        multiPairs: document.getElementById('du-rename-pairs').value,
+        includeSubfolders: document.getElementById('du-rename-subfolders').checked,
+        renameFoldersToo: document.getElementById('du-rename-folders').checked,
+        caseInsensitive: document.getElementById('du-rename-caseInsensitive').checked,
+        dryRun: dryRun
+      };
+      fnName = 'DU_runRename';
+    }
+    else if (tool === 'logo') {
+      payload = {
+        mode: document.getElementById('du-logo-mode').value,
+        logoFileUrl: document.getElementById('du-logo-logoUrl').value.trim(),
+        folderUrl: document.getElementById('du-logo-folderUrl').value.trim(),
+        fileUrls: document.getElementById('du-logo-fileUrls').value.trim(),
+        includeSubfolders: document.getElementById('du-logo-subfolders').checked,
+        replaceLogo: document.getElementById('du-logo-replace').checked,
+        dryRun: dryRun
+      };
+      fnName = 'DU_runLogoOnly';
+    }
+    else if (tool === 'pdf') {
+      payload = {
+        mode: document.getElementById('du-pdf-mode').value,
+        folderUrl: document.getElementById('du-pdf-folderUrl').value.trim(),
+        fileUrls: document.getElementById('du-pdf-fileUrls').value.trim(),
+        outputFolderUrl: document.getElementById('du-pdf-outputFolderUrl').value.trim(),
+        includeSubfolders: document.getElementById('du-pdf-subfolders').checked,
+        overwrite: document.getElementById('du-pdf-overwrite').checked,
+        dryRun: dryRun
+      };
+      fnName = 'DU_runPdfExport';
+    }
+    else if (tool === 'dochistory') {
+      var dhVersion = document.getElementById('du-dh-newVersion').value.trim()
+                   || document.getElementById('du-dh-currentVersion').value.trim();
+      if (!dhVersion) { alert('Please enter a Current Version.'); return; }
+
+      // Build fields array — only include fields that have a value
+      var dhFields = [];
+      var dhDate = document.getElementById('du-dh-date').value.trim();
+      var dhDesc = document.getElementById('du-dh-description').value.trim();
+      var dhWritten = document.getElementById('du-dh-writtenBy').value.trim();
+      var dhApproved = document.getElementById('du-dh-approvedBy').value.trim();
+      if (dhDate)    dhFields.push({ field: 'Date',        value: dhDate });
+      if (dhDesc)    dhFields.push({ field: 'Description', value: dhDesc });
+      if (dhWritten) dhFields.push({ field: 'Written by',  value: dhWritten });
+      if (dhApproved)dhFields.push({ field: 'Approved by', value: dhApproved });
+      if (!dhFields.length) { alert('Please fill in at least one field to update.'); return; }
+
+      payload = {
+        mode: document.getElementById('du-dh-mode').value,
+        folderUrl: document.getElementById('du-dh-folderUrl').value.trim(),
+        fileUrls: document.getElementById('du-dh-fileUrls').value.trim(),
+        version: dhVersion,
+        fields: dhFields,
+        includeSubfolders: document.getElementById('du-dh-subfolders').checked,
+        addIfMissing: document.getElementById('du-dh-addIfMissing').checked,
+        dryRun: dryRun
+      };
+      fnName = 'DU_runDocHistoryUpdate';
+    }
+    else if (tool === 'parser') {
+      payload = {
+        folderUrl: document.getElementById('du-fp-folderUrl').value.trim(),
+        clientName: document.getElementById('du-fp-clientName').value.trim(),
+        outputFolderUrl: document.getElementById('du-fp-outputFolderUrl').value.trim(),
+        sheetName: document.getElementById('du-fp-sheetName').value.trim(),
+        includeSubfolders: document.getElementById('du-fp-subfolders').checked
+      };
+      fnName = 'DU_runFolderParser';
+    }
+
+    var statusEl = document.getElementById('du-status');
+    var statusText = document.getElementById('du-statusText');
+    var statusBadge = document.getElementById('du-statusBadge');
+
+    statusEl.className = 'du-status';
+    statusText.textContent = 'Running…';
+    statusBadge.textContent = 'running';
+    document.getElementById('du-output').textContent = '';
+    document.getElementById('du-resultBadge').textContent = '…';
+    document.body.classList.add('loading');
+
+    var runner = google.script.run
+      .withSuccessHandler(function(result) {
+        document.body.classList.remove('loading');
+        statusEl.className = 'du-status good';
+        statusBadge.textContent = 'done';
+        duShowResult(tool, result, dryRun);
+      })
+      .withFailureHandler(function(err) {
+        document.body.classList.remove('loading');
+        statusEl.className = 'du-status bad';
+        statusText.textContent = err && err.message ? err.message : String(err);
+        statusBadge.textContent = 'error';
+        document.getElementById('du-output').textContent = 'ERROR: ' + (err && err.message ? err.message : String(err));
+        document.getElementById('du-resultBadge').textContent = 'error';
+      });
+
+    if (fnName === 'DU_runRename')               runner.DU_runRename(payload);
+    else if (fnName === 'DU_runLogoOnly')         runner.DU_runLogoOnly(payload);
+    else if (fnName === 'DU_runPdfExport')        runner.DU_runPdfExport(payload);
+    else if (fnName === 'DU_runDocHistoryUpdate') runner.DU_runDocHistoryUpdate(payload);
+    else if (fnName === 'DU_runFolderParser')     runner.DU_runFolderParser(payload);
+  }
+
+  function duShowResult(tool, result, dryRun) {
+    var lines = [];
+    var statusText = document.getElementById('du-statusText');
+    var resultBadge = document.getElementById('du-resultBadge');
+
+    if (tool === 'rename') {
+      lines.push((dryRun ? 'PREVIEW — ' : '') + 'Rename Files');
+      lines.push('Folder: ' + (result.rootFolderName || '—'));
+      lines.push('Scanned: ' + (result.scannedFiles || 0) + ' file(s) in ' + (result.scannedFolders || 0) + ' folder(s)');
+      lines.push('Changes: ' + (result.changesCount || 0));
+      lines.push('');
+      (result.changes || []).forEach(function(c) {
+        lines.push('[' + c.type + '] "' + c.oldName + '" → "' + c.newName + '"');
+      });
+      statusText.textContent = (dryRun ? 'Preview: ' : '') + (result.changesCount || 0) + ' change(s)';
+      resultBadge.textContent = result.changesCount || 0;
+    }
+    else if (tool === 'logo') {
+      lines.push((dryRun ? 'PREVIEW — ' : '') + 'Logo Only');
+      if (result.rootFolderName) lines.push('Folder: ' + result.rootFolderName);
+      lines.push('Scanned: ' + (result.scannedFiles || 0) + ' file(s), ' + (result.scannedDocs || 0) + ' doc(s)');
+      lines.push('Changes: ' + (result.changesCount || 0));
+      lines.push('');
+      (result.changes || []).forEach(function(c) {
+        lines.push('[' + c.logoAction + '] ' + c.name);
+        if (c.message) lines.push('  → ' + c.message);
+      });
+      statusText.textContent = (dryRun ? 'Preview: ' : '') + (result.changesCount || 0) + ' doc(s) updated';
+      resultBadge.textContent = result.changesCount || 0;
+    }
+    else if (tool === 'pdf') {
+      lines.push((dryRun ? 'PREVIEW — ' : '') + 'Convert to PDF');
+      if (result.rootFolderName) lines.push('Source: ' + result.rootFolderName);
+      lines.push('Output folder: ' + (result.outputFolderName || '—'));
+      if (result.outputFolderUrl) lines.push('URL: ' + result.outputFolderUrl);
+      lines.push('');
+      lines.push('Converted: ' + (result.convertedCount || 0) + '  Copied: ' + (result.copiedCount || 0) + '  Skipped: ' + (result.skippedCount || 0) + '  Errors: ' + (result.errorCount || 0));
+      lines.push('');
+      (result.items || []).forEach(function(it) {
+        var icon = it.status === 'converted' ? '✓' : it.status === 'copied' ? '⊕' : it.status === 'error' ? '✗' : '–';
+        lines.push(icon + ' ' + it.name);
+        if (it.message) lines.push('  ' + it.message);
+        if (it.pdfUrl) lines.push('  ' + it.pdfUrl);
+      });
+      statusText.textContent = (dryRun ? 'Preview: ' : '') + (result.convertedCount || 0) + ' converted, ' + (result.errorCount || 0) + ' error(s)';
+      resultBadge.textContent = (result.convertedCount || 0) + ' files';
+    }
+    else if (tool === 'dochistory') {
+      lines.push((dryRun ? 'PREVIEW — ' : '') + 'Update Doc History');
+      if (result.rootFolderName) lines.push('Source: ' + result.rootFolderName);
+      lines.push('Scanned: ' + (result.scannedDocs || 0) + ' doc(s)');
+      lines.push('Updated: ' + (result.updatedCount || 0) + '  Preview: ' + (result.previewCount || 0) + '  Skipped: ' + (result.skippedCount || 0) + '  Errors: ' + (result.errorCount || 0));
+      lines.push('');
+      (result.changes || []).forEach(function(c) {
+        lines.push('[' + c.status + '] ' + c.name);
+        if (c.message) lines.push('  ' + c.message);
+        (c.fieldUpdates || []).forEach(function(fu) {
+          if (fu.status === 'updated' || fu.status === 'preview') {
+            lines.push('  ' + fu.field + ': "' + fu.oldValue + '" → "' + fu.newValue + '"');
+          } else if (fu.status === 'skipped') {
+            lines.push('  ' + fu.field + ': ' + (fu.message || 'skipped'));
+          }
+        });
+      });
+      statusText.textContent = (dryRun ? 'Preview: ' : 'Updated: ') + (dryRun ? result.previewCount : result.updatedCount) + ' doc(s)';
+      resultBadge.textContent = dryRun ? result.previewCount || 0 : result.updatedCount || 0;
+    }
+    else if (tool === 'parser') {
+      lines.push('Folder Parser');
+      lines.push('Docs scanned: ' + (result.docsScanned || 0));
+      lines.push('Rows created: ' + (result.rowsCreated || 0));
+      lines.push('Sheet: ' + (result.sheetName || '—'));
+      lines.push('');
+      if (result.sheetUrl) lines.push(result.sheetUrl);
+      statusText.textContent = (result.rowsCreated || 0) + ' row(s) in "' + (result.sheetName || '') + '"';
+      resultBadge.textContent = result.rowsCreated || 0;
+    }
+
+    document.getElementById('du-output').textContent = lines.join('\n');
+  }
+
+  // ── End Drive Utility ────────────────────────────────────────────────────────
+
+  // ── Test Monitoring ──────────────────────────────────────────────────────────
+
+  var tmState = {
+    loaded:   false,
+    allRows:  [],     // full dataset from server
+    filtered: [],     // rows after search filter
+    sorted:   [],     // rows after sort (all filtered, pre-pagination)
+    selected: {},     // { clientName: true } for checked rows
+    sortCol:  'totalOut',
+    sortDir:  'desc',
+    page:     1,
+    pageSize: 20
+  };
+
+  /**
+   * Called when the Test Monitoring module is first activated.
+   * Loads cached data from the DB (no Vanta call).
+   */
+  function tmInit() {
+    if (tmState.loaded) return; // already loaded this session
+    tmSetStatus('loading');
+    google.script.run
+      .withSuccessHandler(function(result) {
+        tmState.loaded = true;
+        tmHandleData(result);
+        tmSetStatus('idle');
+      })
+      .withFailureHandler(function(err) {
+        tmSetStatus('idle');
+        document.getElementById('tmTableBody').innerHTML =
+          '<tr><td colspan="9" class="tm-empty-cell">Error loading data: ' + escapeHtml(err.message || String(err)) + '</td></tr>';
+      })
+      .TM_getTestMonitorData();
+  }
+
+  /**
+   * Manual refresh: pulls fresh data from Vanta for all clients.
+   */
+  function tmRefreshAll() {
+    var btn = document.getElementById('tmRefreshBtn');
+    btn.disabled = true;
+    btn.textContent = 'Refreshing…';
+    tmSetStatus('loading');
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        tmState.loaded = true;
+        tmHandleData(result);
+        tmSetStatus('idle');
+        btn.disabled = false;
+        btn.textContent = 'Refresh All from Vanta';
+
+        var msg = 'Refreshed ' + result.refreshedCount + ' of ' + result.totalClients + ' client(s).';
+        if (result.errors && result.errors.length) {
+          msg += ' ' + result.errors.length + ' error(s): ' + result.errors.join('; ');
+        }
+        alert(msg);
+      })
+      .withFailureHandler(function(err) {
+        tmSetStatus('idle');
+        btn.disabled = false;
+        btn.textContent = 'Refresh All from Vanta';
+        showError(err);
+      })
+      .TM_refreshAllClients();
+  }
+
+  /** Processes a server result and updates all UI components. */
+  function tmHandleData(result) {
+    tmState.allRows = result.rows || [];
+    tmApplySearch(); // re-applies current search filter and re-renders table (also updates stats)
+    document.getElementById('tmLastRefresh').textContent =
+      'Last refresh: ' + tmFormatLastRefresh(result.lastRefresh);
+  }
+
+  /** Renders the four summary stat cards from the full row set. */
+  function tmRenderStats(rows) {
+    var totalOutTests = 0;
+    var totalOutDocs  = 0;
+    var sumPct        = 0;
+    var below70       = 0;
+    var scopedCount   = 0; // only rows with a framework set
+
+    rows.forEach(function(r) {
+      if (!r.frameworks) return; // unscoped rows excluded from stats
+      scopedCount++;
+      totalOutTests += r.outTests;
+      totalOutDocs  += r.outDocs;
+      sumPct        += r.completedPct;
+      if (r.completedPct < 70) below70++;
+    });
+
+    var avgPct = scopedCount ? Math.round(sumPct / scopedCount) : 0;
+
+    document.getElementById('tmStatOutTests').textContent = scopedCount ? totalOutTests : '—';
+    document.getElementById('tmStatOutDocs').textContent  = scopedCount ? totalOutDocs  : '—';
+    document.getElementById('tmStatAvgPct').textContent   = scopedCount ? avgPct + '%'  : '—';
+    document.getElementById('tmStatBelow70').textContent  = scopedCount ? below70       : '—';
+  }
+
+  /** Renders the data table from tmState.sorted, applying current page. */
+  function tmRenderTable() {
+    var tbody = document.getElementById('tmTableBody');
+    var COLSPAN = 10; // 1 checkbox + 9 data cols
+
+    var allSorted = tmState.sorted;
+    var pageRows;
+    if (tmState.pageSize === 0) {
+      pageRows = allSorted;
+    } else {
+      var start = (tmState.page - 1) * tmState.pageSize;
+      pageRows = allSorted.slice(start, start + tmState.pageSize);
+    }
+
+    if (!pageRows.length) {
+      tbody.innerHTML = tmState.allRows.length
+        ? '<tr><td colspan="' + COLSPAN + '" class="tm-empty-cell">No clients match your search.</td></tr>'
+        : '<tr><td colspan="' + COLSPAN + '" class="tm-empty-cell">No data yet. Click <strong>Refresh All from Vanta</strong> to pull data.</td></tr>';
+      tmUpdateSelectAll();
+      return;
+    }
+
+    tbody.innerHTML = pageRows.map(function(r) {
+      var checked = !!tmState.selected[r.clientName];
+      var noFw    = !r.frameworks;
+      return '<tr class="' + (checked ? 'tm-row-selected' : '') + '">' +
+        '<td class="tm-cb-cell"><input type="checkbox" class="tm-row-cb" data-client="' + escapeHtml(r.clientName) + '"' + (checked ? ' checked' : '') + ' /></td>' +
+        '<td class="tm-client-name">' + escapeHtml(r.clientName) + '</td>' +
+        '<td>' + (r.frameworks ? '<span class="tm-fw-badge">' + escapeHtml(r.frameworks) + '</span>' : '<span class="tm-badge tm-badge-nofw">No framework</span>') + '</td>' +
+        (noFw
+          ? '<td colspan="7" class="tm-muted tm-nofw-hint">Set a framework in Client Management, then refresh.</td>'
+          : (
+            '<td>' + tmCountBadge(r.outTests, r.outTests > 20 ? 'danger' : r.outTests > 10 ? 'warn' : '') + '</td>' +
+            '<td>' + tmProgressCell(r.testPct) + '</td>' +
+            '<td>' + tmCountBadge(r.outDocs, r.outDocs > 20 ? 'danger' : r.outDocs > 10 ? 'warn' : '') + '</td>' +
+            '<td>' + tmProgressCell(r.docPct) + '</td>' +
+            '<td>' + tmCountBadge(r.totalOut, r.totalOut > 30 ? 'danger' : r.totalOut > 15 ? 'warn' : '') + '</td>' +
+            '<td class="tm-muted">' + r.totalScope + '</td>' +
+            '<td>' + tmProgressCell(r.completedPct) + '</td>'
+          )
+        ) +
+      '</tr>';
+    }).join('');
+
+    // Re-bind row checkbox events after innerHTML rebuild
+    document.querySelectorAll('.tm-row-cb').forEach(function(cb) {
+      cb.addEventListener('change', tmOnRowCbChange);
+    });
+
+    tmUpdateSelectAll();
+    tmUpdateRefreshSelectedBtn();
+  }
+
+  /** Toggles a single row's selected state. */
+  function tmOnRowCbChange(e) {
+    var name = e.target.dataset.client;
+    tmState.selected[name] = e.target.checked;
+    var row = e.target.closest('tr');
+    if (row) row.classList.toggle('tm-row-selected', e.target.checked);
+    tmUpdateSelectAll();
+    tmUpdateRefreshSelectedBtn();
+  }
+
+  /** Selects / deselects all currently sorted rows (across all pages). */
+  function tmOnSelectAllChange() {
+    var allCb   = document.getElementById('tmSelectAll');
+    var checked = allCb.checked;
+    tmState.sorted.forEach(function(r) {
+      tmState.selected[r.clientName] = checked;
+    });
+    tmRenderTable();
+  }
+
+  /** Syncs the select-all checkbox state (checked / indeterminate / unchecked). */
+  function tmUpdateSelectAll() {
+    var allCb = document.getElementById('tmSelectAll');
+    if (!allCb) return;
+    var total   = tmState.sorted.length;
+    var checked = tmState.sorted.filter(function(r) { return !!tmState.selected[r.clientName]; }).length;
+    allCb.indeterminate = checked > 0 && checked < total;
+    allCb.checked       = total > 0 && checked === total;
+  }
+
+  /** Updates the Refresh Selected button label and enabled state. */
+  function tmUpdateRefreshSelectedBtn() {
+    var btn = document.getElementById('tmRefreshSelectedBtn');
+    if (!btn) return;
+    var names = tmGetSelectedNames();
+    btn.disabled     = names.length === 0;
+    btn.textContent  = names.length > 0 ? 'Refresh Selected (' + names.length + ')' : 'Refresh Selected';
+  }
+
+  /** Returns the array of currently selected client names. */
+  function tmGetSelectedNames() {
+    return Object.keys(tmState.selected).filter(function(n) { return !!tmState.selected[n]; });
+  }
+
+  /** Refreshes only the selected clients from Vanta. */
+  function tmRefreshSelected() {
+    var names = tmGetSelectedNames();
+    if (!names.length) { alert('No clients selected.'); return; }
+
+    var btn    = document.getElementById('tmRefreshSelectedBtn');
+    var allBtn = document.getElementById('tmRefreshBtn');
+    btn.disabled    = true;
+    allBtn.disabled = true;
+    btn.textContent = 'Refreshing…';
+    tmSetStatus('loading');
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        tmState.loaded = true;
+        tmHandleData(result);
+        tmSetStatus('idle');
+        allBtn.disabled = false;
+        tmUpdateRefreshSelectedBtn();
+
+        var msg = 'Refreshed ' + result.refreshedCount + ' of ' + result.totalClients + ' client(s).';
+        if (result.errors && result.errors.length) {
+          msg += '\n' + result.errors.length + ' error(s):\n' + result.errors.join('\n');
+        }
+        alert(msg);
+      })
+      .withFailureHandler(function(err) {
+        tmSetStatus('idle');
+        allBtn.disabled = false;
+        tmUpdateRefreshSelectedBtn();
+        showError(err);
+      })
+      .TM_refreshSelectedClients(names);
+  }
+
+  /** Builds a count badge HTML string. */
+  function tmCountBadge(count, level) {
+    var cls = 'tm-badge' + (level ? ' tm-badge-' + level : '');
+    return '<span class="' + cls + '">' + count + '</span>';
+  }
+
+  /** Builds a progress bar + label cell. */
+  function tmProgressCell(pct) {
+    var colorClass = pct >= 90 ? 'high' : pct >= 70 ? 'medium' : 'low';
+    return '<div class="tm-prog-wrap">' +
+      '<div class="tm-prog-bar"><div class="tm-prog-fill ' + colorClass + '" style="width:' + pct + '%"></div></div>' +
+      '<span class="tm-prog-label">' + pct + '%</span>' +
+    '</div>';
+  }
+
+  /** Formats an ISO timestamp as "Mmm dd yyyy hh:mm AM/PM EST". */
+  function tmFormatLastRefresh(isoStr) {
+    if (!isoStr) return '—';
+    try {
+      var d = new Date(isoStr);
+      // Convert to Eastern time for display
+      var eastern = new Date(d.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+      var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      var month   = months[eastern.getMonth()];
+      var day     = String(eastern.getDate()).padStart(2, '0');
+      var year    = eastern.getFullYear();
+      var h       = eastern.getHours();
+      var min     = String(eastern.getMinutes()).padStart(2, '0');
+      var ampm    = h >= 12 ? 'PM' : 'AM';
+      h = h % 12 || 12;
+      return month + ' ' + day + ' ' + year + ' ' + String(h).padStart(2, '0') + ':' + min + ' ' + ampm + ' EST';
+    } catch (e) {
+      return isoStr;
+    }
+  }
+
+  /** Shows/hides the loading overlay on the table. */
+  function tmSetStatus(status) {
+    var btn = document.getElementById('tmRefreshBtn');
+    if (!btn) return;
+    if (status === 'loading') {
+      document.body.classList.add('loading');
+    } else {
+      document.body.classList.remove('loading');
+    }
+  }
+
+  /** Live search filter applied to the table. */
+  function tmApplySearch() {
+    var q = (document.getElementById('tmSearch').value || '').trim().toLowerCase();
+    tmState.filtered = q
+      ? tmState.allRows.filter(function(r) {
+          return r.clientName.toLowerCase().indexOf(q) !== -1 ||
+                 (r.frameworks || '').toLowerCase().indexOf(q) !== -1;
+        })
+      : tmState.allRows.slice();
+    tmState.page = 1;
+    tmApplySort();
+  }
+
+  var TM_SORT_LABELS = {
+    clientName:   'Client',
+    frameworks:   'Frameworks',
+    outTests:     'Outstanding Tests',
+    testPct:      'Test %',
+    outDocs:      'Outstanding Docs',
+    docPct:       'Doc %',
+    totalOut:     'Total Outstanding',
+    totalScope:   'Total In-Scope',
+    completedPct: '% Completed'
+  };
+
+  /** Sorts tmState.filtered → tmState.sorted, then re-renders. */
+  function tmApplySort() {
+    var col = tmState.sortCol;
+    var dir = tmState.sortDir;
+    var rows = tmState.filtered.slice();
+    rows.sort(function(a, b) {
+      var av = a[col] !== undefined ? a[col] : '';
+      var bv = b[col] !== undefined ? b[col] : '';
+      if (typeof av === 'string') av = av.toLowerCase();
+      if (typeof bv === 'string') bv = bv.toLowerCase();
+      if (av < bv) return dir === 'asc' ? -1 : 1;
+      if (av > bv) return dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    tmState.sorted = rows;
+    tmRenderStats(tmState.filtered);
+    tmRenderTable();
+    tmRenderPagination();
+    tmUpdateSortIcons();
+  }
+
+  /** Handles a sort-header click for the TM table. */
+  function tmOnHeaderClick(col) {
+    if (tmState.sortCol === col) {
+      tmState.sortDir = tmState.sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      tmState.sortCol = col;
+      tmState.sortDir = (col === 'clientName' || col === 'frameworks') ? 'asc' : 'desc';
+    }
+    tmState.page = 1;
+    tmApplySort();
+  }
+
+  /** Updates sort-direction indicators on TM table headers. */
+  function tmUpdateSortIcons() {
+    document.querySelectorAll('.tm-table .tm-th-sort').forEach(function(th) {
+      var col   = th.dataset.sort;
+      var label = TM_SORT_LABELS[col] || col;
+      th.textContent = label + (col === tmState.sortCol ? (tmState.sortDir === 'asc' ? ' ▲' : ' ▼') : '');
+      th.classList.toggle('tm-th-sort-active', col === tmState.sortCol);
+    });
+  }
+
+  /** Renders pagination controls below the TM table. */
+  function tmRenderPagination() {
+    var el = document.getElementById('tmPagination');
+    if (!el) return;
+    var total      = tmState.sorted.length;
+    var ps         = tmState.pageSize;
+    var totalPages = ps === 0 ? 1 : Math.ceil(total / ps);
+    var curPage    = tmState.page;
+
+    if (total === 0) { el.innerHTML = ''; return; }
+
+    var start = ps === 0 ? 1 : (curPage - 1) * ps + 1;
+    var end   = ps === 0 ? total : Math.min(curPage * ps, total);
+
+    el.innerHTML =
+      '<div class="tm-page-info">' + start + '–' + end + ' of ' + total + ' clients</div>' +
+      '<div class="tm-page-controls">' +
+        '<select id="tmPageSize" class="tm-page-size">' +
+          '<option value="20"' + (ps ===  20 ? ' selected' : '') + '>20 per page</option>' +
+          '<option value="50"' + (ps ===  50 ? ' selected' : '') + '>50 per page</option>' +
+          '<option value="100"'+ (ps === 100 ? ' selected' : '') + '>100 per page</option>' +
+          '<option value="0"'  + (ps ===   0 ? ' selected' : '') + '>All</option>' +
+        '</select>' +
+        '<button class="ghost-btn tm-page-btn" id="tmPagePrev"' + (curPage <= 1 ? ' disabled' : '') + '>&#8592;</button>' +
+        '<span class="tm-page-num">Page ' + curPage + ' of ' + totalPages + '</span>' +
+        '<button class="ghost-btn tm-page-btn" id="tmPageNext"' + (curPage >= totalPages ? ' disabled' : '') + '>&#8594;</button>' +
+      '</div>';
+
+    document.getElementById('tmPageSize').addEventListener('change', function() {
+      tmState.pageSize = parseInt(this.value);
+      tmState.page = 1;
+      tmRenderTable();
+      tmRenderPagination();
+    });
+    document.getElementById('tmPagePrev').addEventListener('click', function() {
+      if (tmState.page > 1) { tmState.page--; tmRenderTable(); tmRenderPagination(); }
+    });
+    document.getElementById('tmPageNext').addEventListener('click', function() {
+      var tp = tmState.pageSize === 0 ? 1 : Math.ceil(tmState.sorted.length / tmState.pageSize);
+      if (tmState.page < tp) { tmState.page++; tmRenderTable(); tmRenderPagination(); }
+    });
+  }
+
+  // Hook into the module activation system
+  var _origSetActiveModule = setActiveModule;
+  setActiveModule = function(moduleId, label) {
+    _origSetActiveModule(moduleId, label);
+    if (moduleId === 'test-monitoring') {
+      tmInit();
+    }
+    if (moduleId === 'client-management') {
+      cmInit();
+    }
+  };
+
+  var _origBindEvents = bindEvents;
+  bindEvents = function() {
+    _origBindEvents();
+    document.getElementById('tmRefreshBtn').addEventListener('click', tmRefreshAll);
+    document.getElementById('tmRefreshSelectedBtn').addEventListener('click', tmRefreshSelected);
+    document.getElementById('tmSelectAll').addEventListener('change', tmOnSelectAllChange);
+    document.getElementById('tmSearch').addEventListener('input', tmApplySearch);
+    document.getElementById('cmRefreshBtn').addEventListener('click', cmLoadClients);
+    document.getElementById('cmSearch').addEventListener('input', cmApplyFilter);
+    document.querySelectorAll('.cm-filter-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() { cmSetFilter(btn.dataset.filter); });
+    });
+    // TM column sort headers
+    document.querySelectorAll('.tm-table .tm-th-sort').forEach(function(th) {
+      th.addEventListener('click', function() { tmOnHeaderClick(th.dataset.sort); });
+    });
+    // CM column sort headers
+    document.querySelectorAll('.cm-table .tm-th-sort').forEach(function(th) {
+      th.addEventListener('click', function() { cmOnHeaderClick(th.dataset.sortCm); });
+    });
+    // Close CM framework dropdown when clicking outside
+    document.addEventListener('click', function(e) {
+      if (cmFxOpenSid) {
+        var wrap = document.getElementById('cmf-fw-wrap-' + cmFxOpenSid);
+        if (wrap && !wrap.contains(e.target)) {
+          cmFxCloseAll();
+        }
+      }
+    });
+  };
+
+  // ── End Test Monitoring ──────────────────────────────────────────────────────
+
+  // ── Client Management ────────────────────────────────────────────────────────
+
+  var cmState = {
+    loaded:       false,
+    allClients:   [],
+    filtered:     [],  // after status filter + search
+    sorted:       [],  // after sort (pre-pagination)
+    activeFilter: 'all',
+    sortCol:      'clientName',
+    sortDir:      'asc',
+    page:         1,
+    pageSize:     20
+  };
+
+  // Per-client framework cache: { [clientName]: { loaded, loading, frameworks: [{id, name}] } }
+  var cmFxState  = {};
+  var cmFxOpenSid = null;
+
+  function cmInit() {
+    if (cmState.loaded) return;
+    cmLoadClients();
+  }
+
+  function cmLoadClients() {
+    var tbody = document.getElementById('cmTableBody');
+    tbody.innerHTML = '<tr><td colspan="6" class="tm-empty-cell">Loading\u2026</td></tr>';
+    google.script.run
+      .withSuccessHandler(function(clients) {
+        cmState.allClients = clients || [];
+        cmState.loaded     = true;
+        cmApplyFilter();
+      })
+      .withFailureHandler(function(err) {
+        tbody.innerHTML = '<tr><td colspan="6" class="tm-empty-cell" style="color:var(--danger)">Error loading clients: ' + cmEsc(err.message || String(err)) + '</td></tr>';
+      })
+      .CM_getAllClientsWithMetadata();
+  }
+
+  function cmSetFilter(filter) {
+    cmState.activeFilter = filter;
+    document.querySelectorAll('.cm-filter-btn').forEach(function(btn) {
+      btn.classList.toggle('active', btn.dataset.filter === filter);
+    });
+    cmApplyFilter();
+  }
+
+  function cmApplyFilter() {
+    var filter = cmState.activeFilter;
+    var q      = (document.getElementById('cmSearch') ? document.getElementById('cmSearch').value : '').trim().toLowerCase();
+    cmState.filtered = cmState.allClients.filter(function(c) {
+      var status = (c.clientStatus || 'Active').toLowerCase();
+      var matchF = filter === 'all'
+        || (filter === 'active'   && status === 'active')
+        || (filter === 'inactive' && status === 'inactive');
+      var matchQ = !q
+        || c.clientName.toLowerCase().indexOf(q) !== -1
+        || (c.opsLead || '').toLowerCase().indexOf(q) !== -1
+        || (c.frameworks || '').toLowerCase().indexOf(q) !== -1;
+      return matchF && matchQ;
+    });
+    cmState.page = 1;
+    cmApplySort();
+  }
+
+  function cmRenderTable() {
+    var tbody = document.getElementById('cmTableBody');
+
+    var allSorted = cmState.sorted;
+    var pageRows;
+    if (cmState.pageSize === 0) {
+      pageRows = allSorted;
+    } else {
+      var start = (cmState.page - 1) * cmState.pageSize;
+      pageRows = allSorted.slice(start, start + cmState.pageSize);
+    }
+
+    if (!pageRows.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="tm-empty-cell">No clients found.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = '';
+    pageRows.forEach(function(c) {
+      var sid      = cmSafeId(c.clientName);
+      var isActive = (c.clientStatus || 'Active').toLowerCase() !== 'inactive';
+
+      // Data row
+      var dataRow      = document.createElement('tr');
+      dataRow.className = 'cm-data-row';
+      dataRow.dataset.client = c.clientName;
+      dataRow.innerHTML = [
+        '<td class="cm-client-name">' + cmEsc(c.clientName) + '</td>',
+        '<td><span class="cm-status-badge cm-status-' + (isActive ? 'active' : 'inactive') + '">' + (isActive ? 'Active' : 'Inactive') + '</span></td>',
+        '<td>' + (c.clientType ? cmEsc(c.clientType) : '<span class="muted">\u2014</span>') + '</td>',
+        '<td>' + (c.opsLead    ? cmEsc(c.opsLead)    : '<span class="muted">\u2014</span>') + '</td>',
+        '<td>' + (c.frameworks ? '<span class="tm-fw-badge">' + cmEsc(c.frameworks) + '</span>' : '<span class="muted">\u2014</span>') + '</td>',
+        '<td class="cm-actions-cell"><button class="ghost-btn cm-edit-btn" type="button">Edit</button></td>'
+      ].join('');
+      dataRow.querySelector('.cm-edit-btn').addEventListener('click', function() { cmToggleEdit(c.clientName); });
+
+      // Edit row
+      var editRow      = document.createElement('tr');
+      editRow.className = 'cm-edit-row';
+      editRow.id        = 'cm-edit-' + sid;
+      editRow.style.display = 'none';
+      var editCell      = document.createElement('td');
+      editCell.colSpan  = 6;
+      editCell.className = 'cm-edit-cell';
+      editCell.appendChild(cmBuildEditForm(c));
+      editRow.appendChild(editCell);
+
+      tbody.appendChild(dataRow);
+      tbody.appendChild(editRow);
+    });
+  }
+
+  function cmBuildEditForm(c) {
+    var sid      = cmSafeId(c.clientName);
+    var isActive = (c.clientStatus || 'Active').toLowerCase() !== 'inactive';
+    var form     = document.createElement('div');
+    form.className = 'cm-form';
+    form.id        = 'cm-form-' + sid;
+    form.innerHTML = [
+      '<div class="cm-form-grid">',
+        '<div class="field"><label>Status</label>',
+          '<select id="cmf-status-' + sid + '">',
+            '<option value="Active"'   + ( isActive ? ' selected' : '') + '>Active</option>',
+            '<option value="Inactive"' + (!isActive ? ' selected' : '') + '>Inactive</option>',
+          '</select></div>',
+        '<div class="field"><label>Client Type</label>',
+          '<select id="cmf-clientType-' + sid + '">',
+            '<option value="">Select\u2026</option>',
+            '<option value="SPRINT"'     + (c.clientType === 'SPRINT'     ? ' selected' : '') + '>SPRINT</option>',
+            '<option value="Engagement"' + (c.clientType === 'Engagement' ? ' selected' : '') + '>Engagement</option>',
+          '</select></div>',
+        '<div class="field"><label>Ops Lead</label>',
+          '<input id="cmf-opsLead-' + sid + '" type="text" value="' + cmEsc(c.opsLead || '') + '" placeholder="Name\u2026" /></div>',
+        '<div class="field"><label>Frameworks</label>',
+          '<input type="hidden" id="cmf-frameworks-hidden-' + sid + '" value="' + cmEsc(c.frameworks || '') + '" />',
+          '<div class="ms-wrap" id="cmf-fw-wrap-' + sid + '">',
+            '<button type="button" class="ms-trigger" id="cmf-fw-trigger-' + sid + '">',
+              '<span id="cmf-fw-text-' + sid + '">' + cmEsc(c.frameworks || 'Select frameworks\u2026') + '</span>',
+              '<span class="ms-caret">&#9662;</span>',
+            '</button>',
+            '<div class="ms-dropdown" id="cmf-fw-dropdown-' + sid + '">',
+              '<div id="cmf-fw-options-' + sid + '" class="ms-options">',
+                '<div class="ms-empty">Loading\u2026</div>',
+              '</div>',
+            '</div>',
+          '</div></div>',
+        '<div class="field"><label>Project Plan Link</label>',
+          '<input id="cmf-projectPlanLink-' + sid + '" type="url" value="' + cmEsc(c.projectPlanLink || '') + '" placeholder="https://\u2026" /></div>',
+        '<div class="field"><label>Evidence Drop Folder Link</label>',
+          '<input id="cmf-evidenceDropLink-' + sid + '" type="url" value="' + cmEsc(c.evidenceDropLink || '') + '" placeholder="https://\u2026" /></div>',
+      '</div>',
+      '<div class="cm-form-toggle-row">',
+        '<label class="toggle-wrap">',
+          '<input type="checkbox" id="cmf-cloudSec-' + sid + '"' + (c.cloudSecIncluded ? ' checked' : '') + ' />',
+          '<span class="toggle-slider"></span>',
+        '</label>',
+        '<div>',
+          '<div class="toggle-title">Workstreet CloudSec</div>',
+          '<div class="toggle-help">Include CloudSec Engineer in contract.</div>',
+        '</div>',
+      '</div>',
+      '<div class="cm-form-actions">',
+        '<button class="primary-btn cm-save-btn" type="button">Save</button>',
+        '<button class="ghost-btn cm-cancel-btn" type="button">Cancel</button>',
+        '<span class="cm-save-status" id="cm-save-status-' + sid + '"></span>',
+      '</div>'
+    ].join('');
+    form.querySelector('.cm-save-btn').addEventListener('click',   function() { cmSave(c.clientName); });
+    form.querySelector('.cm-cancel-btn').addEventListener('click', function() { cmCancelEdit(c.clientName); });
+    form.querySelector('#cmf-fw-trigger-' + sid).addEventListener('click', function(e) {
+      e.stopPropagation();
+      cmFxToggleDropdown(c.clientName, sid);
+    });
+    return form;
+  }
+
+  function cmToggleEdit(clientName) {
+    var sid     = cmSafeId(clientName);
+    var editRow = document.getElementById('cm-edit-' + sid);
+    if (!editRow) return;
+    var isOpen  = editRow.style.display !== 'none';
+    // Close all open edit rows first
+    document.querySelectorAll('.cm-edit-row').forEach(function(r) { r.style.display = 'none'; });
+    document.querySelectorAll('.cm-edit-btn').forEach(function(b) { b.classList.remove('active'); });
+    if (!isOpen) {
+      editRow.style.display = '';
+      // Mark the button in the corresponding data row
+      document.querySelectorAll('.cm-data-row').forEach(function(r) {
+        if (r.dataset.client === clientName) {
+          var btn = r.querySelector('.cm-edit-btn');
+          if (btn) btn.classList.add('active');
+        }
+      });
+    }
+  }
+
+  function cmCancelEdit(clientName) {
+    var sid     = cmSafeId(clientName);
+    var editRow = document.getElementById('cm-edit-' + sid);
+    if (editRow) editRow.style.display = 'none';
+    document.querySelectorAll('.cm-edit-btn').forEach(function(b) { b.classList.remove('active'); });
+  }
+
+  function cmSave(clientName) {
+    var sid      = cmSafeId(clientName);
+    var statusEl = document.getElementById('cm-save-status-' + sid);
+    if (statusEl) statusEl.textContent = 'Saving\u2026';
+
+    var payload = {
+      clientName:      clientName,
+      clientStatus:    document.getElementById('cmf-status-'           + sid).value,
+      clientType:      document.getElementById('cmf-clientType-'       + sid).value,
+      opsLead:         document.getElementById('cmf-opsLead-'          + sid).value,
+      frameworks:      cmFxGetSelected(sid),
+      projectPlanLink: document.getElementById('cmf-projectPlanLink-'  + sid).value,
+      evidenceDropLink:document.getElementById('cmf-evidenceDropLink-' + sid).value,
+      cloudSecIncluded:document.getElementById('cmf-cloudSec-'         + sid).checked
+    };
+
+    google.script.run
+      .withSuccessHandler(function() {
+        // Update local state so table re-renders correctly without a full reload
+        for (var i = 0; i < cmState.allClients.length; i++) {
+          if (cmState.allClients[i].clientName === clientName) {
+            cmState.allClients[i].clientStatus    = payload.clientStatus;
+            cmState.allClients[i].clientType      = payload.clientType;
+            cmState.allClients[i].opsLead         = payload.opsLead;
+            cmState.allClients[i].frameworks      = payload.frameworks;
+            cmState.allClients[i].projectPlanLink = payload.projectPlanLink;
+            cmState.allClients[i].evidenceDropLink= payload.evidenceDropLink;
+            cmState.allClients[i].cloudSecIncluded= payload.cloudSecIncluded;
+            break;
+          }
+        }
+        if (statusEl) statusEl.textContent = 'Saved!';
+        setTimeout(function() {
+          cmCancelEdit(clientName);
+          cmApplyFilter();
+        }, 700);
+      })
+      .withFailureHandler(function(err) {
+        if (statusEl) statusEl.textContent = 'Error: ' + cmEsc(err.message || String(err));
+      })
+      .CM_saveClientData(payload);
+  }
+
+  // ── CM Sort + Pagination ──────────────────────────────────────────────────────
+
+  var CM_SORT_LABELS = {
+    clientName:   'Client',
+    clientStatus: 'Status',
+    clientType:   'Client Type',
+    opsLead:      'Ops Lead',
+    frameworks:   'Frameworks'
+  };
+
+  /** Sorts cmState.filtered → cmState.sorted, then re-renders. */
+  function cmApplySort() {
+    var col = cmState.sortCol;
+    var dir = cmState.sortDir;
+    var rows = cmState.filtered.slice();
+    rows.sort(function(a, b) {
+      var av = (a[col] || '').toString().toLowerCase();
+      var bv = (b[col] || '').toString().toLowerCase();
+      if (av < bv) return dir === 'asc' ? -1 : 1;
+      if (av > bv) return dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    cmState.sorted = rows;
+    cmRenderTable();
+    cmRenderPagination();
+    cmUpdateSortIcons();
+  }
+
+  /** Handles a sort-header click for the CM table. */
+  function cmOnHeaderClick(col) {
+    if (cmState.sortCol === col) {
+      cmState.sortDir = cmState.sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      cmState.sortCol = col;
+      cmState.sortDir = 'asc';
+    }
+    cmState.page = 1;
+    cmApplySort();
+  }
+
+  /** Updates sort-direction indicators on CM table headers. */
+  function cmUpdateSortIcons() {
+    document.querySelectorAll('.cm-table .tm-th-sort').forEach(function(th) {
+      var col   = th.dataset.sortCm;
+      var label = CM_SORT_LABELS[col] || col;
+      th.textContent = label + (col === cmState.sortCol ? (cmState.sortDir === 'asc' ? ' ▲' : ' ▼') : '');
+      th.classList.toggle('tm-th-sort-active', col === cmState.sortCol);
+    });
+  }
+
+  /** Renders pagination controls below the CM table. */
+  function cmRenderPagination() {
+    var el = document.getElementById('cmPagination');
+    if (!el) return;
+    var total      = cmState.sorted.length;
+    var ps         = cmState.pageSize;
+    var totalPages = ps === 0 ? 1 : Math.ceil(total / ps);
+    var curPage    = cmState.page;
+
+    if (total === 0) { el.innerHTML = ''; return; }
+
+    var start = ps === 0 ? 1 : (curPage - 1) * ps + 1;
+    var end   = ps === 0 ? total : Math.min(curPage * ps, total);
+
+    el.innerHTML =
+      '<div class="tm-page-info">' + start + '–' + end + ' of ' + total + ' clients</div>' +
+      '<div class="tm-page-controls">' +
+        '<select id="cmPageSize" class="tm-page-size">' +
+          '<option value="20"' + (ps ===  20 ? ' selected' : '') + '>20 per page</option>' +
+          '<option value="50"' + (ps ===  50 ? ' selected' : '') + '>50 per page</option>' +
+          '<option value="100"'+ (ps === 100 ? ' selected' : '') + '>100 per page</option>' +
+          '<option value="0"'  + (ps ===   0 ? ' selected' : '') + '>All</option>' +
+        '</select>' +
+        '<button class="ghost-btn tm-page-btn" id="cmPagePrev"' + (curPage <= 1 ? ' disabled' : '') + '>&#8592;</button>' +
+        '<span class="tm-page-num">Page ' + curPage + ' of ' + totalPages + '</span>' +
+        '<button class="ghost-btn tm-page-btn" id="cmPageNext"' + (curPage >= totalPages ? ' disabled' : '') + '>&#8594;</button>' +
+      '</div>';
+
+    document.getElementById('cmPageSize').addEventListener('change', function() {
+      cmState.pageSize = parseInt(this.value);
+      cmState.page = 1;
+      cmRenderTable();
+      cmRenderPagination();
+    });
+    document.getElementById('cmPagePrev').addEventListener('click', function() {
+      if (cmState.page > 1) { cmState.page--; cmRenderTable(); cmRenderPagination(); }
+    });
+    document.getElementById('cmPageNext').addEventListener('click', function() {
+      var tp = cmState.pageSize === 0 ? 1 : Math.ceil(cmState.sorted.length / cmState.pageSize);
+      if (cmState.page < tp) { cmState.page++; cmRenderTable(); cmRenderPagination(); }
+    });
+  }
+
+  // ── CM Framework multi-select helpers ────────────────────────────────────────
+
+  function cmFxToggleDropdown(clientName, sid) {
+    var dropdown = document.getElementById('cmf-fw-dropdown-' + sid);
+    var trigger  = document.getElementById('cmf-fw-trigger-'  + sid);
+    if (!dropdown) return;
+    var isOpen = dropdown.classList.contains('open');
+
+    cmFxCloseAll();
+
+    if (!isOpen) {
+      var st = cmFxState[clientName];
+      if (!st || (!st.loaded && !st.loading)) {
+        cmFxFetchFrameworks(clientName, sid);
+      } else if (st.loaded) {
+        cmFxRenderOptions(clientName, sid);
+      }
+      if (trigger)  trigger.classList.add('open');
+      if (dropdown) dropdown.classList.add('open');
+      cmFxOpenSid = sid;
+    }
+  }
+
+  function cmFxCloseAll() {
+    document.querySelectorAll('.cm-form .ms-trigger.open').forEach(function(t)  { t.classList.remove('open'); });
+    document.querySelectorAll('.cm-form .ms-dropdown.open').forEach(function(d) { d.classList.remove('open'); });
+    cmFxOpenSid = null;
+  }
+
+  function cmFxFetchFrameworks(clientName, sid) {
+    if (!cmFxState[clientName]) cmFxState[clientName] = { loaded: false, loading: false, frameworks: [] };
+    cmFxState[clientName].loading = true;
+
+    var optionsEl = document.getElementById('cmf-fw-options-' + sid);
+    if (optionsEl) optionsEl.innerHTML = '<div class="ms-empty">Loading frameworks\u2026</div>';
+
+    var trigger  = document.getElementById('cmf-fw-trigger-'  + sid);
+    var dropdown = document.getElementById('cmf-fw-dropdown-' + sid);
+    if (trigger)  trigger.classList.add('open');
+    if (dropdown) dropdown.classList.add('open');
+    cmFxOpenSid = sid;
+
+    google.script.run
+      .withSuccessHandler(function(frameworks) {
+        cmFxState[clientName].frameworks = frameworks || [];
+        cmFxState[clientName].loaded     = true;
+        cmFxState[clientName].loading    = false;
+        cmFxRenderOptions(clientName, sid);
+      })
+      .withFailureHandler(function(err) {
+        cmFxState[clientName].loading = false;
+        if (optionsEl) optionsEl.innerHTML = '<div class="ms-empty">Error loading frameworks.</div>';
+      })
+      .WD_getFrameworks(clientName);
+  }
+
+  function cmFxRenderOptions(clientName, sid) {
+    var optionsEl = document.getElementById('cmf-fw-options-' + sid);
+    if (!optionsEl) return;
+
+    var frameworks = (cmFxState[clientName] && cmFxState[clientName].frameworks) || [];
+    if (!frameworks.length) {
+      optionsEl.innerHTML = '<div class="ms-empty">No frameworks found.</div>';
+      return;
+    }
+
+    // Build stored names set from hidden input (fallback) or current label text
+    var hiddenEl    = document.getElementById('cmf-frameworks-hidden-' + sid);
+    var storedRaw   = hiddenEl ? hiddenEl.value : '';
+    var storedSet   = {};
+    storedRaw.split(',').forEach(function(n) {
+      var t = n.trim().toLowerCase();
+      if (t) storedSet[t] = true;
+    });
+
+    optionsEl.innerHTML = '';
+    frameworks.forEach(function(fw) {
+      var isChecked = !!storedSet[fw.name.trim().toLowerCase()];
+      var label = document.createElement('label');
+      label.className = 'ms-option';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = fw.id;
+      cb.dataset.name = fw.name;
+      cb.checked = isChecked;
+      cb.addEventListener('change', function() { cmFxUpdateLabel(sid); });
+      var span = document.createElement('span');
+      span.className = 'ms-option-label';
+      span.textContent = fw.name;
+      label.appendChild(cb);
+      label.appendChild(span);
+      optionsEl.appendChild(label);
+    });
+
+    cmFxUpdateLabel(sid);
+  }
+
+  function cmFxUpdateLabel(sid) {
+    var optionsEl  = document.getElementById('cmf-fw-options-' + sid);
+    var textEl     = document.getElementById('cmf-fw-text-'    + sid);
+    if (!optionsEl || !textEl) return;
+    var checked = Array.from(optionsEl.querySelectorAll('input[type="checkbox"]:checked'));
+    textEl.textContent = checked.length
+      ? checked.map(function(cb) { return cb.dataset.name; }).join(', ')
+      : 'All frameworks (no filter)';
+  }
+
+  /** Returns comma-joined selected framework names, or stored value if dropdown was never opened. */
+  function cmFxGetSelected(sid) {
+    var optionsEl = document.getElementById('cmf-fw-options-' + sid);
+    var checkboxes = optionsEl ? optionsEl.querySelectorAll('input[type="checkbox"]') : [];
+    if (!checkboxes.length) {
+      // Dropdown was never opened — preserve the stored value
+      var hidden = document.getElementById('cmf-frameworks-hidden-' + sid);
+      return hidden ? hidden.value : '';
+    }
+    var names = [];
+    checkboxes.forEach(function(cb) { if (cb.checked) names.push(cb.dataset.name); });
+    return names.join(', ');
+  }
+
+  // ── End CM Framework helpers ──────────────────────────────────────────────────
+
+  function cmSafeId(name) {
+    return String(name).replace(/[^a-zA-Z0-9]/g, '_');
+  }
+
+  function cmEsc(str) {
+    return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // ── End Client Management ────────────────────────────────────────────────────
 </script>

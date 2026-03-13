@@ -92,11 +92,19 @@ function WD_fetchAllTests_(token) {
     Authorization: 'Bearer ' + token
   };
 
-  return WD_pagedGetAll_(function(cursor) {
+  const all = WD_pagedGetAll_(function(cursor) {
     let url = APP_CONFIG.VANTA_API_BASE + '/tests?pageSize=' + APP_CONFIG.API_PAGE_SIZE;
     if (cursor) url += '&pageCursor=' + WD_encodeCursorSafely_(cursor);
     return url;
   }, headers);
+
+  // Deduplicate by id — Vanta can return the same test on multiple pages
+  const byId = {};
+  all.forEach(function(t) {
+    const id = t && (t.id || t.testId);
+    if (id && !byId[id]) byId[id] = t;
+  });
+  return Object.keys(byId).map(function(id) { return byId[id]; });
 }
 
 function WD_fetchEntitiesBatch_(token, testIds) {
@@ -257,4 +265,212 @@ function WD_encodeCursorSafely_(cursor) {
   const s = String(cursor);
   if (/%[0-9A-Fa-f]{2}/.test(s)) return s;
   return encodeURIComponent(s);
+}
+
+// ── Framework Explorer API functions ──────────────────────────────────────────
+
+function WD_fetchFrameworks_(token) {
+  const headers = { Accept: 'application/json', Authorization: 'Bearer ' + token };
+  return WD_pagedGetAll_(function(cursor) {
+    let url = APP_CONFIG.VANTA_API_BASE + '/frameworks?pageSize=' + APP_CONFIG.API_PAGE_SIZE;
+    if (cursor) url += '&pageCursor=' + WD_encodeCursorSafely_(cursor);
+    return url;
+  }, headers);
+}
+
+function WD_fetchFrameworkControls_(token, frameworkId) {
+  const headers = { Accept: 'application/json', Authorization: 'Bearer ' + token };
+  return WD_pagedGetAll_(function(cursor) {
+    let url = APP_CONFIG.VANTA_API_BASE + '/frameworks/' + encodeURIComponent(frameworkId) + '/controls?pageSize=' + APP_CONFIG.API_PAGE_SIZE;
+    if (cursor) url += '&pageCursor=' + WD_encodeCursorSafely_(cursor);
+    return url;
+  }, headers);
+}
+
+function WD_fetchControlTests_(token, controlId) {
+  const headers = { Accept: 'application/json', Authorization: 'Bearer ' + token };
+  return WD_pagedGetAll_(function(cursor) {
+    let url = APP_CONFIG.VANTA_API_BASE + '/controls/' + encodeURIComponent(controlId) + '/tests?pageSize=' + APP_CONFIG.API_PAGE_SIZE;
+    if (cursor) url += '&pageCursor=' + WD_encodeCursorSafely_(cursor);
+    return url;
+  }, headers);
+}
+
+function WD_fetchControlDocuments_(token, controlId) {
+  const headers = { Accept: 'application/json', Authorization: 'Bearer ' + token };
+  return WD_pagedGetAll_(function(cursor) {
+    let url = APP_CONFIG.VANTA_API_BASE + '/controls/' + encodeURIComponent(controlId) + '/documents?pageSize=' + APP_CONFIG.API_PAGE_SIZE;
+    if (cursor) url += '&pageCursor=' + WD_encodeCursorSafely_(cursor);
+    return url;
+  }, headers);
+}
+
+/**
+ * Returns all control IDs for the given framework IDs.
+ * Used to avoid re-fetching controls when filtering both tests and documents.
+ */
+function WD_fetchControlIdsForFrameworks_(token, frameworkIds) {
+  const controlIds = [];
+  frameworkIds.forEach(function(frameworkId) {
+    const controls = WD_fetchFrameworkControls_(token, frameworkId);
+    controls.forEach(function(c) { if (c.id) controlIds.push(c.id); });
+  });
+  return controlIds;
+}
+
+/**
+ * Batch-fetches test IDs for a pre-fetched list of control IDs.
+ * Returns { testId: true } for O(1) lookup.
+ */
+function WD_fetchTestIdsForControls_(token, controlIds) {
+  if (!controlIds || !controlIds.length) return {};
+  const headers = { Accept: 'application/json', Authorization: 'Bearer ' + token };
+  const testIdSet = {};
+  const BATCH = 20;
+
+  for (var i = 0; i < controlIds.length; i += BATCH) {
+    const batch = controlIds.slice(i, i + BATCH);
+    const requests = batch.map(function(controlId) {
+      return {
+        url: APP_CONFIG.VANTA_API_BASE + '/controls/' + encodeURIComponent(controlId) +
+             '/tests?pageSize=' + APP_CONFIG.API_PAGE_SIZE,
+        method: 'get',
+        headers: headers,
+        muteHttpExceptions: true
+      };
+    });
+    const responses = UrlFetchApp.fetchAll(requests);
+    responses.forEach(function(resp) {
+      const code = resp.getResponseCode();
+      if (code >= 200 && code < 300) {
+        const body = JSON.parse(resp.getContentText() || '{}');
+        const data = (body.results || {}).data || [];
+        data.forEach(function(t) {
+          const id = t && (t.id || t.testId);
+          if (id) testIdSet[id] = true;
+        });
+      }
+    });
+    if (i + BATCH < controlIds.length) Utilities.sleep(APP_CONFIG.RATE_LIMIT_MIN_MS);
+  }
+  return testIdSet;
+}
+
+/**
+ * Batch-fetches document IDs for a pre-fetched list of control IDs.
+ * Returns { docId: true } for O(1) lookup.
+ */
+function WD_fetchDocumentIdsForControls_(token, controlIds) {
+  if (!controlIds || !controlIds.length) return {};
+  const headers = { Accept: 'application/json', Authorization: 'Bearer ' + token };
+  const docIdSet = {};
+  const BATCH = 20;
+
+  for (var i = 0; i < controlIds.length; i += BATCH) {
+    const batch = controlIds.slice(i, i + BATCH);
+    const requests = batch.map(function(controlId) {
+      return {
+        url: APP_CONFIG.VANTA_API_BASE + '/controls/' + encodeURIComponent(controlId) +
+             '/documents?pageSize=' + APP_CONFIG.API_PAGE_SIZE,
+        method: 'get',
+        headers: headers,
+        muteHttpExceptions: true
+      };
+    });
+    const responses = UrlFetchApp.fetchAll(requests);
+    responses.forEach(function(resp) {
+      const code = resp.getResponseCode();
+      if (code >= 200 && code < 300) {
+        const body = JSON.parse(resp.getContentText() || '{}');
+        const data = (body.results || {}).data || [];
+        data.forEach(function(d) {
+          const id = d && (d.id || d.documentId);
+          if (id) docIdSet[id] = true;
+        });
+      }
+    });
+    if (i + BATCH < controlIds.length) Utilities.sleep(APP_CONFIG.RATE_LIMIT_MIN_MS);
+  }
+  return docIdSet;
+}
+
+/**
+ * Convenience wrapper: framework IDs → test ID set.
+ */
+function WD_fetchTestIdsForFrameworks_(token, frameworkIds) {
+  if (!frameworkIds || !frameworkIds.length) return {};
+  return WD_fetchTestIdsForControls_(token, WD_fetchControlIdsForFrameworks_(token, frameworkIds));
+}
+
+/**
+ * Fetch all outstanding documents (Needs document + Needs update statuses).
+ * Queries each status bucket separately and dedupes by ID.
+ */
+function WD_fetchAllDocuments_(token) {
+  const headers = { Accept: 'application/json', Authorization: 'Bearer ' + token };
+  const STATUSES = ['Needs document', 'Needs update'];
+  const byId = {};
+
+  STATUSES.forEach(function(st) {
+    const docs = WD_pagedGetAll_(function(cursor) {
+      let url = APP_CONFIG.VANTA_API_BASE + '/documents?pageSize=' + APP_CONFIG.API_PAGE_SIZE +
+        '&statusMatchesAny=' + encodeURIComponent(st);
+      if (cursor) url += '&pageCursor=' + WD_encodeCursorSafely_(cursor);
+      return url;
+    }, headers);
+
+    docs.forEach(function(d) {
+      if (!d) return;
+      const id = d.id || d.documentId;
+      if (!id) return;
+      if (!d.id) d.id = id;
+      if (!d.status) d.status = st;
+      if (!byId[id]) byId[id] = d;
+    });
+  });
+
+  return Object.keys(byId).map(function(id) { return byId[id]; });
+}
+
+/**
+ * Convenience wrapper: framework IDs → document ID set.
+ */
+function WD_fetchDocumentIdsForFrameworks_(token, frameworkIds) {
+  if (!frameworkIds || !frameworkIds.length) return {};
+  return WD_fetchDocumentIdsForControls_(token, WD_fetchControlIdsForFrameworks_(token, frameworkIds));
+}
+
+// ── Token service proxy (for future use once token service is redeployed) ──────
+
+/**
+ * Calls an action on the token service and returns the parsed JSON response.
+ */
+function WD_callTokenService_(action, extraParams) {
+  let url = APP_CONFIG.TOKEN_SERVICE_URL.replace(/\/$/, '') + '?action=' + encodeURIComponent(action);
+  if (extraParams) {
+    Object.keys(extraParams).forEach(function(k) {
+      url += '&' + encodeURIComponent(k) + '=' + encodeURIComponent(extraParams[k]);
+    });
+  }
+
+  const resp = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true });
+  const code = resp.getResponseCode();
+  const text = resp.getContentText() || '{}';
+
+  if (code < 200 || code >= 300) {
+    throw new Error('Token service HTTP ' + code + ': ' + text.substring(0, 300));
+  }
+
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    throw new Error('Token service returned invalid JSON.');
+  }
+
+  if (json.error) {
+    throw new Error('Token service error: ' + json.error);
+  }
+
+  return json;
 }
