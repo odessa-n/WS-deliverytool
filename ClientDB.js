@@ -21,11 +21,22 @@ var DB_REQUIRED_COLS = [
   { key: 'clientStatus',     label: 'Client Status',             aliases: DB_COLUMN_MAP.clientStatus }
 ];
 
+/** Request-scoped cache: one CLIENT_DB spreadsheet handle per execution. */
+var _clientDbSpreadsheet = null;
+
+function WD_getClientDbSpreadsheet_() {
+  var id = getConfigValue('CLIENT_DB_SPREADSHEET_ID');
+  if (!_clientDbSpreadsheet && id) {
+    _clientDbSpreadsheet = SpreadsheetApp.openById(id);
+  }
+  return _clientDbSpreadsheet;
+}
+
 function WD_getClientMetadata(clientName) {
-  if (!clientName || !APP_CONFIG.CLIENT_DB_SPREADSHEET_ID) return {};
+  if (!clientName || !getConfigValue('CLIENT_DB_SPREADSHEET_ID')) return {};
   try {
-    var ss = SpreadsheetApp.openById(APP_CONFIG.CLIENT_DB_SPREADSHEET_ID);
-    var sheet = ss.getSheetByName(APP_CONFIG.CLIENT_DB_SHEET_NAME) || ss.getSheets()[0];
+    var ss = WD_getClientDbSpreadsheet_();
+    var sheet = ss.getSheetByName(getConfigValue('CLIENT_DB_SHEET_NAME') || 'Sheet1') || ss.getSheets()[0];
     var data = sheet.getDataRange().getValues();
     if (data.length < 2) return {};
 
@@ -58,10 +69,10 @@ function WD_getClientMetadata(clientName) {
 }
 
 function WD_saveClientMetadata(clientName, data) {
-  if (!clientName || !APP_CONFIG.CLIENT_DB_SPREADSHEET_ID) return;
+  if (!clientName || !getConfigValue('CLIENT_DB_SPREADSHEET_ID')) return;
   try {
-    var ss = SpreadsheetApp.openById(APP_CONFIG.CLIENT_DB_SPREADSHEET_ID);
-    var sheet = ss.getSheetByName(APP_CONFIG.CLIENT_DB_SHEET_NAME) || ss.getSheets()[0];
+    var ss = WD_getClientDbSpreadsheet_();
+    var sheet = ss.getSheetByName(getConfigValue('CLIENT_DB_SHEET_NAME') || 'Sheet1') || ss.getSheets()[0];
     var allData = sheet.getDataRange().getValues();
 
     if (allData.length === 0) {
@@ -128,6 +139,7 @@ function WD_saveClientMetadata(clientName, data) {
         if (idx !== -1) sheet.getRange(rowIdx, idx + 1).setValue(writeData[col.key]);
       });
     }
+    WD_appendAuditLog_('Save client metadata', clientName);
   } catch(e) {
     Logger.log('WD_saveClientMetadata error: ' + e.toString());
   }
@@ -140,10 +152,10 @@ function WD_saveClientMetadata(clientName, data) {
  */
 function WD_readAllClientDb_() {
   var result = {};
-  if (!APP_CONFIG.CLIENT_DB_SPREADSHEET_ID) return result;
+  if (!getConfigValue('CLIENT_DB_SPREADSHEET_ID')) return result;
   try {
-    var ss    = SpreadsheetApp.openById(APP_CONFIG.CLIENT_DB_SPREADSHEET_ID);
-    var sheet = ss.getSheetByName(APP_CONFIG.CLIENT_DB_SHEET_NAME) || ss.getSheets()[0];
+    var ss    = WD_getClientDbSpreadsheet_();
+    var sheet = ss.getSheetByName(getConfigValue('CLIENT_DB_SHEET_NAME') || 'Sheet1') || ss.getSheets()[0];
     var data  = sheet.getDataRange().getValues();
     if (data.length < 2) return result;
 
@@ -192,8 +204,8 @@ function WD_dbFindColIdx_(headers, aliases) {
  * Helps diagnose column-mapping issues.
  */
 function WD_debugClientDB() {
-  var ss = SpreadsheetApp.openById(APP_CONFIG.CLIENT_DB_SPREADSHEET_ID);
-  var sheet = ss.getSheetByName(APP_CONFIG.CLIENT_DB_SHEET_NAME) || ss.getSheets()[0];
+  var ss = WD_getClientDbSpreadsheet_();
+  var sheet = ss.getSheetByName(getConfigValue('CLIENT_DB_SHEET_NAME') || 'Sheet1') || ss.getSheets()[0];
   var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   Logger.log('Sheet: ' + sheet.getName());
   Logger.log('Headers: ' + JSON.stringify(headers));
@@ -209,4 +221,67 @@ function WD_dbParseBool_(val) {
   if (!val) return false;
   var lower = val.toLowerCase();
   return lower === 'true' || lower === 'yes' || lower === '1';
+}
+
+var AUDIT_LOG_SHEET_NAME = 'AuditLog';
+
+/**
+ * Appends a row to the AuditLog sheet in the Client DB spreadsheet.
+ * Columns: Timestamp, User, Action, Context.
+ * @param {string} action - e.g. 'Save client metadata', 'Sync FrameworkMappingDB (all clients)', 'Upload vendor document'
+ * @param {string} context - e.g. client name, vendor id (non-sensitive summary)
+ */
+function WD_appendAuditLog_(action, context) {
+  if (!getConfigValue('CLIENT_DB_SPREADSHEET_ID')) return;
+  try {
+    var ss = WD_getClientDbSpreadsheet_();
+    var sheet = ss.getSheetByName(AUDIT_LOG_SHEET_NAME);
+    if (!sheet) {
+      sheet = ss.insertSheet(AUDIT_LOG_SHEET_NAME);
+      sheet.appendRow(['Timestamp', 'User', 'Action', 'Context']);
+      sheet.setFrozenRows(1);
+    }
+    var user = '';
+    try {
+      user = Session.getActiveUser().getEmail() || '';
+    } catch (e) {}
+    sheet.appendRow([
+      new Date().toISOString(),
+      user,
+      String(action || '').trim(),
+      String(context || '').trim()
+    ]);
+  } catch (e) {
+    Logger.log('WD_appendAuditLog_: ' + (e && e.message));
+  }
+}
+
+/**
+ * Returns recent audit log entries for the optional viewer.
+ * @param {number} [limit] - Max rows (default 100).
+ * @returns {Array<{timestamp, user, action, context}>}
+ */
+function WD_getAuditLog(limit) {
+  limit = Math.min(Math.max(limit || 100, 1), 500);
+  if (!getConfigValue('CLIENT_DB_SPREADSHEET_ID')) return [];
+  try {
+    var ss = WD_getClientDbSpreadsheet_();
+    var sheet = ss.getSheetByName(AUDIT_LOG_SHEET_NAME);
+    if (!sheet) return [];
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return [];
+    var rows = [];
+    for (var i = Math.max(1, data.length - limit); i < data.length; i++) {
+      rows.push({
+        timestamp: String(data[i][0] || ''),
+        user:      String(data[i][1] || ''),
+        action:    String(data[i][2] || ''),
+        context:   String(data[i][3] || '')
+      });
+    }
+    return rows.reverse();
+  } catch (e) {
+    Logger.log('WD_getAuditLog: ' + (e && e.message));
+    return [];
+  }
 }

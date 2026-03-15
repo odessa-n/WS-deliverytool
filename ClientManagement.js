@@ -51,6 +51,9 @@ function CM_saveClientData(payload) {
   payload = payload || {};
   var clientName = String(payload.clientName || '').trim();
   if (!clientName) throw new Error('Client name is required.');
+  if (!isAdmin()) {
+    throw new Error('Only admins can save client data. Set ADMIN_EMAILS in Script Properties.');
+  }
 
   WD_saveClientMetadata(clientName, {
     clientType:      payload.clientType      || '',

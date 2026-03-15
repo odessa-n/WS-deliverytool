@@ -1,11 +1,15 @@
 /** WebApp.gs **/
 
 function doGet() {
-  return HtmlService
+  var output = HtmlService
     .createTemplateFromFile('Index')
     .evaluate()
-    .setTitle(APP_CONFIG.APP_NAME)
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    .setTitle(APP_CONFIG.APP_NAME);
+  var mode = HtmlService.XFrameOptionsMode.DENY;
+  if (mode != null) {
+    output = output.setXFrameOptionsMode(mode);
+  }
+  return output;
 }
 
 function include(filename) {

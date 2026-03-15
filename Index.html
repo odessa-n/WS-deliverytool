@@ -6,6 +6,19 @@
     <?!= include('Styles'); ?>
   </head>
   <body>
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+    <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+    <div id="globalLoadingOverlay" class="global-loading-overlay" aria-hidden="true" style="display:none;">
+      <div class="global-loading-spinner"></div>
+      <span class="global-loading-text">Working…</span>
+    </div>
+    <div id="bootstrapErrorScreen" class="bootstrap-error-screen" style="display:none;">
+      <div class="bootstrap-error-card">
+        <h2>Could not load the app</h2>
+        <p id="bootstrapErrorMessage" class="bootstrap-error-msg"></p>
+        <button type="button" class="primary-btn" id="bootstrapErrorRetryBtn">Retry</button>
+      </div>
+    </div>
     <div id="app" class="app-shell">
       <aside class="sidebar">
         <div class="brand-block">
@@ -17,19 +30,33 @@
         </div>
 
         <div class="nav-section-label">Tools</div>
-        <nav class="nav-list" id="navList"></nav>
+        <nav class="nav-list" id="navList" role="navigation" aria-label="Main tools"></nav>
 
-        <div class="sidebar-footer">
-          <div class="small-label">Workstreet · Delivery</div>
+        <div class="exec-log-wrap" id="execLogWrap">
+          <button type="button" class="exec-log-header" id="execLogHeader" aria-expanded="false" aria-controls="execLogBody">
+            <span class="exec-log-title">Execution log</span>
+            <span class="exec-log-badge" id="execLogBadge">0</span>
+            <span class="exec-log-caret" aria-hidden="true">▾</span>
+          </button>
+          <div class="exec-log-body" id="execLogBody" hidden>
+            <div class="exec-log-entries" id="execLogEntries"></div>
+            <button type="button" class="exec-log-clear" id="execLogClear">Clear</button>
+          </div>
         </div>
+
       </aside>
 
-      <main class="workspace">
+      <main id="main-content" class="workspace" role="main">
         <section id="module-dashboard" class="module-pane active">
           <div class="hero-card">
             <div class="hero-title">Welcome</div>
             <div class="hero-copy">
               Use the left navigation to access Workstreet delivery tools.
+            </div>
+            <div class="dashboard-quick-actions">
+              <button type="button" class="ghost-btn" id="dashboardTrustOpsBtn">Run Trust Ops</button>
+              <button type="button" class="ghost-btn" id="dashboardTmBtn">Refresh Test Monitor</button>
+              <button type="button" class="ghost-btn" id="dashboardFmBtn">Sync Framework Mapping</button>
             </div>
           </div>
         </section>
@@ -138,13 +165,15 @@
           <div class="panel tm-header-panel">
             <div class="tm-header-left">
               <h2>Test Monitoring</h2>
-              <p>Outstanding tests and documents across all clients, pulled from Vanta and cached for instant access.</p>
+              <p>Tests and documents from Vanta per client. Refresh creates or updates a TM: ClientName sheet for each client; scope is from Framework Mapping DB.</p>
             </div>
             <div class="tm-header-right">
               <span class="tm-last-refresh-label" id="tmLastRefresh">Last refresh: —</span>
+              <button class="ghost-btn" id="tmExportCsvBtn" type="button">Export CSV</button>
               <button class="ghost-btn" id="tmRefreshSelectedBtn" type="button" disabled>Refresh Selected</button>
               <button class="primary-btn" id="tmRefreshBtn" type="button">Refresh All from Vanta</button>
             </div>
+            <p class="tm-help-line muted" style="margin:0.5rem 0 0; font-size:12px;">Refresh pulls tests and documents from Vanta for each client and writes a TM: ClientName sheet. Framework scope is determined from Framework Mapping DB.</p>
           </div>
 
           <!-- Summary stat cards -->
@@ -177,21 +206,33 @@
             <div class="table-wrap tm-table-wrap" style="overflow-x:auto;">
               <table class="results-table tm-table">
                 <thead>
+                  <tr class="tm-group-header-row">
+                    <th colspan="3"></th>
+                    <th colspan="4" class="tm-group-label tm-group-label-tests">Tests</th>
+                    <th colspan="4" class="tm-group-label tm-group-label-docs">Documents</th>
+                    <th colspan="2"></th>
+                  </tr>
                   <tr>
                     <th class="tm-cb-th"><input type="checkbox" id="tmSelectAll" title="Select all" /></th>
                     <th class="tm-th-sort" data-sort="clientName">Client</th>
                     <th class="tm-th-sort" data-sort="frameworks">Frameworks</th>
-                    <th class="tm-th-sort" data-sort="outTests">Outstanding Tests</th>
-                    <th class="tm-th-sort" data-sort="testPct">Test %</th>
-                    <th class="tm-th-sort" data-sort="outDocs">Outstanding Docs</th>
-                    <th class="tm-th-sort" data-sort="docPct">Doc %</th>
+                    <!-- Tests group -->
+                    <th class="tm-th-sort tm-th-group-tests" data-sort="passingTests" title="Passing scoped tests (active − outstanding)">OK</th>
+                    <th class="tm-th-sort tm-th-group-tests" data-sort="deactivatedTests" title="Deactivated / excluded from scope">Deactivated</th>
+                    <th class="tm-th-sort tm-th-group-tests" data-sort="outTests" title="Outstanding — needs attention">Outstanding</th>
+                    <th class="tm-th-sort tm-th-group-tests" data-sort="testPct">Test %</th>
+                    <!-- Docs group -->
+                    <th class="tm-th-sort tm-th-group-docs" data-sort="passingDocs" title="Passing scoped documents">OK</th>
+                    <th class="tm-th-sort tm-th-group-docs" data-sort="deactivatedDocs" title="Not relevant">Deactivated</th>
+                    <th class="tm-th-sort tm-th-group-docs" data-sort="outDocs" title="Needs document / needs update">Outstanding</th>
+                    <th class="tm-th-sort tm-th-group-docs" data-sort="docPct">Doc %</th>
+                    <!-- Overall -->
                     <th class="tm-th-sort" data-sort="totalOut">Total Outstanding</th>
-                    <th class="tm-th-sort" data-sort="totalScope">Total In-Scope</th>
-                    <th class="tm-th-sort" data-sort="completedPct">% Completed</th>
+                    <th class="tm-th-sort" data-sort="completedPct">% Completion</th>
                   </tr>
                 </thead>
                 <tbody id="tmTableBody">
-                  <tr><td colspan="9" class="tm-empty-cell">Loading…</td></tr>
+                  <tr><td colspan="13" class="tm-empty-cell">Loading…</td></tr>
                 </tbody>
               </table>
             </div>
@@ -209,7 +250,24 @@
               <p>Manage client records, status, and metadata. Active clients appear in Trust Ops and Test Monitoring.</p>
             </div>
             <div class="cm-header-right">
+              <button class="ghost-btn" id="cmExportCsvBtn" type="button">Export CSV</button>
               <button class="ghost-btn" id="cmRefreshBtn" type="button">Refresh from Central API</button>
+              <button class="ghost-btn" id="cmViewAuditLogBtn" type="button">View audit log</button>
+            </div>
+          </div>
+
+          <div id="cmAuditLogPanel" class="panel" style="display:none; margin-top:0.5rem;">
+            <div class="panel-head tight">
+              <h3>Audit log</h3>
+              <button class="ghost-btn" type="button" id="cmAuditLogCloseBtn">Close</button>
+            </div>
+            <div class="table-wrap" style="max-height:280px; overflow:auto;">
+              <table class="results-table">
+                <thead>
+                  <tr><th>Timestamp</th><th>User</th><th>Action</th><th>Context</th></tr>
+                </thead>
+                <tbody id="cmAuditLogBody"></tbody>
+              </table>
             </div>
           </div>
 
@@ -247,57 +305,67 @@
 
         </section>
 
-        <section id="module-framework-explorer" class="module-pane">
-          <div class="panel">
-            <div class="panel-head">
-              <div>
-                <h2>Framework Explorer</h2>
-                <p>Browse frameworks, controls, tests, and documents in a client's Vanta instance.</p>
-              </div>
+        <!-- ── Framework Mapping ─────────────────────────────────────── -->
+        <section id="module-control-mapping" class="module-pane">
+          <div class="du-card fdm-db-block" id="fdm-db-block">
+            <div class="du-card-h">
+              <h2>Framework Mapping DB</h2>
+              <span class="du-badge" id="fdm-db-lastUpdated">—</span>
             </div>
-            <div class="grid grid-3">
-              <div class="field">
-                <label for="fxClientSelect">Client</label>
-                <select id="fxClientSelect">
-                  <option value="">Select Client</option>
-                </select>
+            <div class="du-card-b">
+              <div class="fdm-db-toolbar">
+                <button type="button" class="du-btn du-btn-primary" id="fdm-db-fetchAllBtn">Fetch for all clients</button>
+                <button type="button" class="du-btn du-btn-ghost" id="fdm-db-exportCsvBtn">Export CSV</button>
               </div>
-            </div>
-            <div class="button-row">
-              <button id="loadFrameworksBtn" class="primary-btn" type="button">Load Frameworks</button>
+              <div class="fdm-db-filters">
+                <div class="fdm-db-filter-row">
+                  <label class="du-label">Client</label>
+                  <select id="fdm-db-clientFilter">
+                    <option value="">—</option>
+                  </select>
+                </div>
+                <div class="fdm-db-filter-row">
+                  <label class="du-label">Framework</label>
+                  <select id="fdm-db-frameworkFilter">
+                    <option value="">All</option>
+                  </select>
+                </div>
+              </div>
+              <p class="muted" style="margin:0.25rem 0 0.5rem; font-size:12px;">Run <strong>Fetch for all clients</strong> periodically to keep the table current.</p>
+              <div class="fdm-db-table-wrap table-wrap">
+                <table class="results-table fdm-db-table" id="fdm-db-table">
+                  <thead id="fdm-db-thead">
+                    <tr><th>#</th><th>name</th><th>type</th></tr>
+                  </thead>
+                  <tbody id="fdm-db-tbody">
+                    <tr><td colspan="3" class="fdm-db-empty">Load data to see the mapping table.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="fdm-db-pagination" id="fdm-db-pagination"></div>
             </div>
           </div>
+        </section>
 
-          <div class="fx-panels">
-            <div class="panel fx-col">
-              <div class="panel-head tight">
-                <h3>Frameworks</h3>
-                <span class="fx-badge" id="fxFrameworkCount"></span>
+        <!-- ── Test: verify tests & documents pull ─────────────────────────────── -->
+        <section id="module-api-test" class="module-pane">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Test: Tests &amp; Documents</h2>
+              <p>Check that the API is returning controls, tests, and documents before refreshing the full DB. Uses the same code path as Framework Mapping (no DB write).</p>
+            </div>
+            <div class="grid grid-2" style="max-width: 560px;">
+              <div class="field">
+                <label for="testClientSelect">Client</label>
+                <select id="testClientSelect">
+                  <option value="Beacon Street Studios">Beacon Street Studios</option>
+                </select>
               </div>
-              <div id="fxFrameworksList" class="fx-list">
-                <div class="empty-state">Select a client and load frameworks.</div>
+              <div class="field" style="display: flex; align-items: flex-end;">
+                <button type="button" class="primary-btn" id="testFetchBtn">Check tests &amp; documents</button>
               </div>
             </div>
-
-            <div class="panel fx-col">
-              <div class="panel-head tight">
-                <h3>Controls</h3>
-                <span class="fx-badge" id="fxControlCount"></span>
-              </div>
-              <div id="fxControlsList" class="fx-list">
-                <div class="empty-state">Select a framework to see its controls.</div>
-              </div>
-            </div>
-
-            <div class="panel fx-col">
-              <div class="panel-head tight">
-                <h3>Tests &amp; Documents</h3>
-                <span class="fx-badge" id="fxDetailCount"></span>
-              </div>
-              <div id="fxDetailsList" class="fx-list">
-                <div class="empty-state">Select a control to see its tests and documents.</div>
-              </div>
-            </div>
+            <div id="testResultWrap" class="info-banner" style="display: none; margin-top: 12px; white-space: pre-wrap; font-family: monospace; font-size: 12px;"></div>
           </div>
         </section>
 
@@ -581,6 +649,128 @@
                 <pre id="du-output">(nothing yet)</pre>
                 <div class="du-mini">Shows up to 200 items.</div>
               </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ── Vendor Risk Management ──────────────────────────────── -->
+        <section id="module-vendor-risk" class="module-pane">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>Vendor Risk</h2>
+                <p>Monitor vendor security reviews, identify overdue reviews, and upload documentation for high-risk vendors.</p>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <button class="ghost-btn" id="vrRefreshClientsBtn" type="button">Refresh Clients</button>
+              </div>
+            </div>
+
+            <!-- Controls row -->
+            <div class="grid grid-3" style="margin-bottom:16px;">
+              <div class="field">
+                <label for="vrClientSelect">Client</label>
+                <select id="vrClientSelect">
+                  <option value="">Select a client...</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="vrRiskFilter">Risk Filter</label>
+                <select id="vrRiskFilter">
+                  <option value="all">All vendors</option>
+                  <option value="critical_high" selected>Critical &amp; High only</option>
+                  <option value="critical">Critical only</option>
+                  <option value="high">High only</option>
+                </select>
+              </div>
+              <div class="field" style="display:flex;align-items:flex-end;">
+                <button class="primary-btn" id="vrLoadBtn" type="button" style="width:100%;">Load Vendors</button>
+              </div>
+            </div>
+
+            <!-- Summary bar -->
+            <div id="vrSummary" style="display:none;margin-bottom:16px;">
+              <div class="grid grid-3">
+                <div class="stat-card" id="vrStatTotal" style="padding:12px 16px;background:var(--surface-2,#f5f5f5);border-radius:6px;">
+                  <div style="font-size:11px;color:var(--text-muted,#888);text-transform:uppercase;letter-spacing:.06em;">Total Vendors</div>
+                  <div style="font-size:22px;font-weight:700;" id="vrStatTotalNum">—</div>
+                </div>
+                <div class="stat-card" style="padding:12px 16px;background:#fff3cd;border-radius:6px;">
+                  <div style="font-size:11px;color:#856404;text-transform:uppercase;letter-spacing:.06em;">Needs Review</div>
+                  <div style="font-size:22px;font-weight:700;color:#856404;" id="vrStatNeedsReview">—</div>
+                </div>
+                <div class="stat-card" style="padding:12px 16px;background:#d4edda;border-radius:6px;">
+                  <div style="font-size:11px;color:#155724;text-transform:uppercase;letter-spacing:.06em;">Current</div>
+                  <div style="font-size:22px;font-weight:700;color:#155724;" id="vrStatCurrent">—</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Status message -->
+            <div id="vrStatus" class="info-banner" style="display:none;"></div>
+
+            <!-- Vendor table -->
+            <div id="vrTableWrap" style="display:none;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <div style="font-size:13px;color:var(--text-muted,#888);" id="vrTableLabel"></div>
+                <div style="display:flex;gap:8px;">
+                  <button class="ghost-btn" id="vrAutoUploadBtn" type="button" style="display:none;">Auto-Upload Docs for Overdue</button>
+                </div>
+              </div>
+              <div style="overflow-x:auto;">
+                <table class="vr-table" id="vrTable">
+                  <thead>
+                    <tr>
+                      <th>Vendor</th>
+                      <th>Category</th>
+                      <th>Risk Level</th>
+                      <th>Status</th>
+                      <th>Last Review</th>
+                      <th>Review Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="vrTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Upload doc drawer -->
+            <div id="vrUploadDrawer" style="display:none;margin-top:20px;border-top:1px solid var(--border,#e0e0e0);padding-top:20px;">
+              <h3 style="margin:0 0 12px;">Upload Document to Vendor</h3>
+              <input type="hidden" id="vrUploadVendorId" />
+              <input type="hidden" id="vrUploadReviewId" />
+              <div class="grid grid-2">
+                <div class="field">
+                  <label>Vendor</label>
+                  <input type="text" id="vrUploadVendorName" readonly style="background:var(--surface-2,#f5f5f5);" />
+                </div>
+                <div class="field">
+                  <label for="vrUploadDocType">Document Type</label>
+                  <select id="vrUploadDocType">
+                    <option value="soc2_report">SOC 2 Report</option>
+                    <option value="iso27001_certificate">ISO 27001 Certificate</option>
+                    <option value="penetration_test_report">Penetration Test Report</option>
+                    <option value="vulnerability_scan">Vulnerability Scan</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="vrUploadTitle">Document Title</label>
+                  <input type="text" id="vrUploadTitle" placeholder="e.g. GitHub SOC 2 Type II Report 2025" />
+                </div>
+                <div class="field">
+                  <label for="vrUploadFileId">Google Drive File ID</label>
+                  <input type="text" id="vrUploadFileId" placeholder="Paste Drive file ID..." />
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:12px;">
+                <button class="primary-btn" id="vrUploadSubmitBtn" type="button">Upload to Vendor</button>
+                <button class="ghost-btn" id="vrUploadReviewSubmitBtn" type="button">Upload to Latest Review</button>
+                <button class="ghost-btn" id="vrUploadCancelBtn" type="button">Cancel</button>
+              </div>
+              <div id="vrUploadStatus" style="margin-top:8px;font-size:13px;display:none;"></div>
             </div>
 
           </div>

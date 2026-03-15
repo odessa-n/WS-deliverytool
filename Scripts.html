@@ -1,35 +1,112 @@
 <script>
-  const state = {
+  var state = {
     bootstrap: null,
     clients: [],
     activeModule: 'dashboard',
+    workingClient: null,
     trustOpsResult: null,
     toFx: {
       frameworks: [],     // [{id, name}] loaded from Vanta for the selected client
       loaded: false,      // true once frameworks have been fetched for current client
       loading: false,     // true while fetching
       storedNames: ''     // names from ClientDB prefill, used to auto-check on load
-    },
-    fx: {
-      clientName: null,
-      frameworks: [],
-      selectedFrameworkId: null,
-      controls: [],
-      selectedControlId: null
     }
   };
 
-  document.addEventListener('DOMContentLoaded', initApp);
+  var EXEC_LOG_MAX = 80;
+  var executionLog = [];
+
+  function appendExecutionLog(operation, success, message) {
+    var kind = success === true ? 'success' : (success === false ? 'error' : 'info');
+    executionLog.unshift({
+      time: new Date().toLocaleTimeString(),
+      operation: operation,
+      kind: kind,
+      message: message || ''
+    });
+    if (executionLog.length > EXEC_LOG_MAX) executionLog.pop();
+    var wrap = document.getElementById('execLogWrap');
+    var badge = document.getElementById('execLogBadge');
+    var entriesEl = document.getElementById('execLogEntries');
+    if (badge) badge.textContent = executionLog.length;
+    if (entriesEl) {
+      entriesEl.innerHTML = executionLog.slice(0, 50).map(function(e) {
+        var cls = 'exec-log-entry exec-log-entry--' + e.kind;
+        var msg = e.message ? (e.operation + ': ' + e.message) : e.operation;
+        return '<div class="' + cls + '"><time>' + escapeHtml(e.time) + '</time>' + escapeHtml(msg) + '</div>';
+      }).join('');
+    }
+  }
+
+  function execLogToggle() {
+    var wrap = document.getElementById('execLogWrap');
+    var body = document.getElementById('execLogBody');
+    var header = document.getElementById('execLogHeader');
+    if (!wrap || !body) return;
+    var open = body.getAttribute('hidden') === null;
+    if (open) {
+      body.setAttribute('hidden', '');
+      if (header) header.setAttribute('aria-expanded', 'false');
+      if (wrap) wrap.setAttribute('aria-expanded', 'false');
+    } else {
+      body.removeAttribute('hidden');
+      if (header) header.setAttribute('aria-expanded', 'true');
+      if (wrap) wrap.setAttribute('aria-expanded', 'true');
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    var h = document.getElementById('execLogHeader');
+    var c = document.getElementById('execLogClear');
+    if (h) {
+      h.addEventListener('click', execLogToggle);
+      h.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); execLogToggle(); }
+      });
+    }
+    if (c) c.addEventListener('click', function() {
+      executionLog = [];
+      var badge = document.getElementById('execLogBadge');
+      var entriesEl = document.getElementById('execLogEntries');
+      if (badge) badge.textContent = '0';
+      if (entriesEl) entriesEl.innerHTML = '';
+    });
+    initApp();
+  });
+
+  function showBootstrapError(message) {
+    var app = document.getElementById('app');
+    var errEl = document.getElementById('bootstrapErrorScreen');
+    var msgEl = document.getElementById('bootstrapErrorMessage');
+    var retryBtn = document.getElementById('bootstrapErrorRetryBtn');
+    if (app) app.style.display = 'none';
+    if (errEl) errEl.style.display = 'flex';
+    if (msgEl) msgEl.textContent = message || 'Something went wrong.';
+    if (retryBtn) {
+      retryBtn.onclick = function() {
+        if (errEl) errEl.style.display = 'none';
+        if (app) app.style.display = '';
+        initApp();
+      };
+    }
+  }
 
   function initApp() {
+    document.getElementById('bootstrapErrorScreen').style.display = 'none';
+    document.getElementById('app').style.display = '';
     google.script.run
       .withSuccessHandler(function(data) {
         state.bootstrap = data;
         renderNav(data.modules || []);
         bindEvents();
         loadClients();
+        appendExecutionLog('Bootstrap', true, 'App loaded');
       })
-      .withFailureHandler(showError)
+      .withFailureHandler(function(err) {
+        var msg = (err && err.message) ? err.message : String(err);
+        appendExecutionLog('Bootstrap', false, msg);
+        showBootstrapError(msg);
+      })
       .WD_getBootstrapData();
   }
 
@@ -38,8 +115,18 @@
     document.getElementById('generateTrustOpsBtn').addEventListener('click', generateTrustOps);
     document.getElementById('copyMessageBtn').addEventListener('click', copyMessage);
     document.getElementById('clientSelect').addEventListener('change', onClientChange);
-    document.getElementById('loadFrameworksBtn').addEventListener('click', fxLoadFrameworks);
-
+    var tmExport = document.getElementById('tmExportCsvBtn');
+    if (tmExport) tmExport.addEventListener('click', function() {
+      google.script.run.withSuccessHandler(function(r) { downloadCsv(r.csv, r.filename); }).withFailureHandler(showError).WD_exportTestMonitorCSV();
+    });
+    var cmExport = document.getElementById('cmExportCsvBtn');
+    if (cmExport) cmExport.addEventListener('click', function() {
+      google.script.run.withSuccessHandler(function(r) { downloadCsv(r.csv, r.filename); }).withFailureHandler(showError).WD_exportClientManagementCSV();
+    });
+    var fdmExport = document.getElementById('fdm-db-exportCsvBtn');
+    if (fdmExport) fdmExport.addEventListener('click', function() {
+      google.script.run.withSuccessHandler(function(r) { downloadCsv(r.csv, r.filename); }).withFailureHandler(showError).WD_exportFrameworkMappingCSV();
+    });
     // Framework multi-select toggle
     document.getElementById('frameworksMsTrigger').addEventListener('click', toFxToggleDropdown);
 
@@ -50,22 +137,92 @@
         toFxCloseDropdown();
       }
     });
+    var dTrustOps = document.getElementById('dashboardTrustOpsBtn');
+    if (dTrustOps) dTrustOps.addEventListener('click', function() { goToModule('trustops-v2a'); });
+    var dTm = document.getElementById('dashboardTmBtn');
+    if (dTm) dTm.addEventListener('click', function() { goToModule('test-monitoring'); });
+    var dFm = document.getElementById('dashboardFmBtn');
+    if (dFm) dFm.addEventListener('click', function() { goToModule('control-mapping'); });
+    var testFetchBtn = document.getElementById('testFetchBtn');
+    if (testFetchBtn) testFetchBtn.addEventListener('click', runTestFetch);
+  }
+
+  function runTestFetch() {
+    var btn = document.getElementById('testFetchBtn');
+    var wrap = document.getElementById('testResultWrap');
+    var sel = document.getElementById('testClientSelect');
+    var clientName = sel ? sel.value : 'Beacon Street Studios';
+    if (!clientName) { showToast('error', 'Select a client.'); return; }
+    if (btn) btn.disabled = true;
+    if (wrap) {
+      wrap.style.display = 'block';
+      wrap.textContent = 'Checking…';
+      wrap.className = 'info-banner';
+    }
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (btn) btn.disabled = false;
+        if (!wrap) return;
+        if (result.error) {
+          wrap.textContent = 'Error: ' + result.error;
+          wrap.className = 'info-banner';
+          wrap.style.background = '#fef2f2';
+          wrap.style.color = '#991b1b';
+        } else {
+          var lines = [
+            'Client: ' + result.clientName,
+            'Framework: ' + result.frameworkName + ' (' + result.frameworkId + ')',
+            'Controls: ' + result.controlCount,
+            'Tests: ' + result.totalTests,
+            'Documents: ' + result.totalDocuments,
+            '',
+            'Sample (first 5 controls):'
+          ];
+          (result.sample || []).forEach(function(s) {
+            lines.push('  — ' + s.controlName + ': ' + s.testCount + ' tests, ' + s.docCount + ' docs');
+          });
+          wrap.textContent = lines.join('\n');
+          wrap.className = 'info-banner';
+          wrap.style.background = '#f0fdf4';
+          wrap.style.color = '#166534';
+        }
+        appendExecutionLog('Test fetch', result.error ? false : true, result.error || (result.controlCount + ' controls, ' + result.totalTests + ' tests, ' + result.totalDocuments + ' docs'));
+      })
+      .withFailureHandler(function(err) {
+        if (btn) btn.disabled = false;
+        if (wrap) {
+          wrap.style.display = 'block';
+          wrap.textContent = 'Error: ' + (err && err.message ? err.message : String(err));
+          wrap.className = 'info-banner';
+          wrap.style.background = '#fef2f2';
+          wrap.style.color = '#991b1b';
+        }
+        appendExecutionLog('Test fetch', false, err && err.message ? err.message : String(err));
+      })
+      .WD_testFetchTestsAndDocuments({ clientName: clientName });
   }
 
   function renderNav(modules) {
-    const nav = document.getElementById('navList');
+    var nav = document.getElementById('navList');
+    if (!nav) return;
     nav.innerHTML = '';
 
-    modules.forEach(function(mod) {
-      const btn = document.createElement('button');
+    (modules || []).forEach(function(mod) {
+      var btn = document.createElement('button');
       btn.className = 'nav-item' + (mod.id === state.activeModule ? ' active' : '');
       btn.type = 'button';
+      btn.setAttribute('aria-current', mod.id === state.activeModule ? 'page' : 'false');
       btn.textContent = mod.label;
       btn.addEventListener('click', function() {
         setActiveModule(mod.id, mod.label);
       });
       nav.appendChild(btn);
     });
+  }
+
+  function goToModule(moduleId) {
+    var mod = state.bootstrap && state.bootstrap.modules && state.bootstrap.modules.find(function(m) { return m.id === moduleId; });
+    if (mod) setActiveModule(moduleId, mod.label);
   }
 
   function setActiveModule(moduleId, label) {
@@ -77,23 +234,31 @@
       el.classList.remove('active');
     });
 
-    const target = document.getElementById('module-' + moduleId);
+    var target = document.getElementById('module-' + moduleId);
     if (target) target.classList.add('active');
 
-    const matchingNav = Array.from(document.querySelectorAll('.nav-item'))
-      .find(btn => btn.textContent === label);
-    if (matchingNav) matchingNav.classList.add('active');
-
+    document.querySelectorAll('.nav-item').forEach(function(btn) {
+      var isActive = btn.textContent && btn.textContent.trim() === label;
+      btn.classList.toggle('active', isActive);
+      btn.setAttribute('aria-current', isActive ? 'page' : 'false');
+    });
   }
 
   function loadClients() {
-    const select = document.getElementById('clientSelect');
-    select.innerHTML = '<option value="">Loading clients...</option>';
+    var loadingOpt = '<option value="">Loading clients...</option>';
+    var s1 = document.getElementById('clientSelect');
+    var s3 = document.getElementById('fdmClientSelect');
+    var s4 = document.getElementById('vrClientSelect');
+    if (s1) s1.innerHTML = loadingOpt;
+    if (s3) s3.innerHTML = loadingOpt;
+    if (s4) s4.innerHTML = loadingOpt;
 
     google.script.run
       .withSuccessHandler(function(clients) {
         state.clients = clients || [];
+        if (typeof vrState !== 'undefined') vrState.clients = state.clients;
         renderClients();
+        appendExecutionLog('Clients', true, 'Loaded ' + (state.clients.length || 0));
       })
       .withFailureHandler(showError)
       .WD_getActiveClients();
@@ -101,6 +266,7 @@
 
   function onClientChange() {
     var clientName = document.getElementById('clientSelect').value;
+    state.workingClient = clientName || null;
     if (!clientName) {
       clearPrefillFields();
       return;
@@ -147,7 +313,7 @@
       })
       .withFailureHandler(function(err) {
         setFieldsLoading(false);
-        console.error('Prefill failed:', err);
+        showError(err);
       })
       .WD_getClientMetadata(clientName);
   }
@@ -176,7 +342,7 @@
   function renderClients() {
     var selects = [
       document.getElementById('clientSelect'),
-      document.getElementById('fxClientSelect')
+      document.getElementById('vrClientSelect')
     ];
 
     selects.forEach(function(select) {
@@ -191,11 +357,26 @@
       });
       if (currentVal) select.value = currentVal;
     });
+
+    var testSel = document.getElementById('testClientSelect');
+    if (testSel && state.clients.length) {
+      var testCurrent = testSel.value;
+      testSel.innerHTML = '';
+      state.clients.forEach(function(client) {
+        var opt = document.createElement('option');
+        opt.value = client;
+        opt.textContent = client;
+        testSel.appendChild(opt);
+      });
+      if (state.clients.indexOf('Beacon Street Studios') >= 0) testSel.value = 'Beacon Street Studios';
+      else if (testCurrent && state.clients.indexOf(testCurrent) >= 0) testSel.value = testCurrent;
+      else if (state.clients[0]) testSel.value = state.clients[0];
+    }
   }
 
   function generateTrustOps() {
     var selected = toFxGetSelected();
-    const payload = {
+    var payload = {
       clientName: document.getElementById('clientSelect').value,
       clientType: document.getElementById('clientType').value,
       projectPlanLink: document.getElementById('projectPlanLink').value,
@@ -207,28 +388,42 @@
     };
 
     if (!payload.clientName) {
-      alert('Please select a client first.');
+      showToast('error', 'Please select a client first.');
       return;
     }
+    if (!isValidUrl(payload.projectPlanLink)) {
+      showToast('error', 'Please enter a valid URL for Project Plan Link.');
+      return;
+    }
+    if (!isValidUrl(payload.evidenceDropLink)) {
+      showToast('error', 'Please enter a valid URL for Evidence Drop Folder Link.');
+      return;
+    }
+    var hasFrameworks = (payload.selectedFrameworkIds && payload.selectedFrameworkIds.length > 0) ||
+      (state.toFx.storedNames && String(state.toFx.storedNames).trim() !== '');
+    if (!hasFrameworks) {
+      showToast('info', 'No frameworks selected. Add frameworks in Client Management for correct scoping, or select frameworks above.');
+    }
 
-    document.body.classList.add('loading');
+    setGlobalLoading(true);
 
     google.script.run
       .withSuccessHandler(function(result) {
-        document.body.classList.remove('loading');
+        setGlobalLoading(false);
         state.trustOpsResult = result;
         renderTrustOpsResult(result);
+        appendExecutionLog('Trust Ops', true, (result.count != null ? result.count : 0) + ' items');
       })
       .withFailureHandler(function(err) {
-        document.body.classList.remove('loading');
+        setGlobalLoading(false);
         showError(err);
       })
       .WD_generateTrustOpsV2A(payload);
   }
 
   function renderTrustOpsResult(result) {
-    const meta = document.getElementById('resultsMeta');
-    const items = result.items || result.tests || [];
+    var meta = document.getElementById('resultsMeta');
+    var items = result.items || result.tests || [];
     meta.textContent = 'Outstanding items found: ' + result.count +
       ' (' + (result.tests ? result.tests.length : 0) + ' tests, ' +
       (result.items ? result.items.length - (result.tests ? result.tests.length : 0) : 0) + ' documents)';
@@ -236,70 +431,90 @@
     document.getElementById('formattedOutput').value = result.textOutput || '';
     document.getElementById('formattedPreview').innerHTML = result.htmlOutput || '';
 
-    const wrap = document.getElementById('resultsTableWrap');
+    var wrap = document.getElementById('resultsTableWrap');
 
     if (!items.length) {
       wrap.innerHTML = '<div class="empty-state">No outstanding items found.</div>';
       return;
     }
 
-    const rows = items.map(function(item) {
-      const isDoc = item.itemType === 'Document';
-      const entities = !isDoc && item.failingEntityCount
+    var rows = items.map(function(item) {
+      var isDoc = item.itemType === 'Document';
+      var entities = !isDoc && item.failingEntityCount
         ? (item.showEntityListInline
             ? item.failingEntities.map(function(e) { return escapeHtml(e); }).join('<br>')
             : (item.failingEntityCount + ' items'))
         : '-';
-
-      return `
-        <tr>
-          <td>
-            ${item.link ? `<a href="${escapeHtml(item.link)}" target="_blank">${escapeHtml(item.name)}</a>` : escapeHtml(item.name)}
-          </td>
-          <td><span class="pill ${isDoc ? 'doc-type' : 'outstanding'}">${escapeHtml(item.itemType || 'Automated Test')}</span></td>
-          <td><span class="pill outstanding">${escapeHtml(item.normalizedStatus)}</span></td>
-          <td>${escapeHtml(item.dueLabel || '-')}</td>
-          <td>${isDoc ? '-' : escapeHtml(String(item.failingEntityCount || 0))}</td>
-          <td>${entities}</td>
-        </tr>
-      `;
+      var nameCell = item.link
+        ? '<a href="' + escapeHtml(item.link) + '" target="_blank">' + escapeHtml(item.name) + '</a>'
+        : escapeHtml(item.name);
+      var pillClass = isDoc ? 'doc-type' : 'outstanding';
+      return '<tr>' +
+        '<td>' + nameCell + '</td>' +
+        '<td><span class="pill ' + pillClass + '">' + escapeHtml(item.itemType || 'Automated Test') + '</span></td>' +
+        '<td><span class="pill outstanding">' + escapeHtml(item.normalizedStatus) + '</span></td>' +
+        '<td>' + escapeHtml(item.dueLabel || '-') + '</td>' +
+        '<td>' + (isDoc ? '-' : escapeHtml(String(item.failingEntityCount || 0))) + '</td>' +
+        '<td>' + entities + '</td>' +
+        '</tr>';
     }).join('');
 
-    wrap.innerHTML = `
-      <table class="results-table">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Status</th>
-            <th>Due</th>
-            <th>Failing Count</th>
-            <th>Failing Entities</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    `;
+    wrap.innerHTML =
+      '<table class="results-table">' +
+        '<thead><tr>' +
+          '<th>Name</th><th>Type</th><th>Status</th><th>Due</th><th>Failing Count</th><th>Failing Entities</th>' +
+        '</tr></thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table>';
   }
 
-  async function copyMessage() {
-    const val = document.getElementById('formattedOutput').value || '';
+  function copyMessage() {
+    var val = document.getElementById('formattedOutput').value || '';
     if (!val) {
       alert('Nothing to copy yet.');
       return;
     }
-
-    try {
-      await navigator.clipboard.writeText(val);
-      alert('Message copied.');
-    } catch (e) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(val).then(function() {
+        alert('Message copied.');
+      }).catch(function() {
+        alert('Copy failed. Please copy manually.');
+      });
+    } else {
       alert('Copy failed. Please copy manually.');
     }
   }
 
+  function showToast(type, message) {
+    type = type || 'info';
+    message = String(message || '').trim();
+    if (!message) return;
+    var container = document.getElementById('toastContainer');
+    if (!container) return;
+    var toast = document.createElement('div');
+    toast.className = 'toast toast--' + type;
+    toast.setAttribute('role', 'alert');
+    var span = document.createElement('span');
+    span.textContent = message;
+    toast.appendChild(span);
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'toast-close';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.textContent = '\u00d7';
+    close.onclick = function() { toast.remove(); };
+    toast.appendChild(close);
+    container.appendChild(toast);
+    setTimeout(function() {
+      if (toast.parentNode) toast.remove();
+    }, 6000);
+  }
+
   function showError(err) {
     console.error(err);
-    alert((err && err.message) ? err.message : String(err));
+    var msg = (err && err.message) ? err.message : String(err);
+    appendExecutionLog('Error', false, msg);
+    showToast('error', msg);
   }
 
   function escapeHtml(str) {
@@ -309,6 +524,50 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  function isValidUrl(s) {
+    if (!s || typeof s !== 'string') return true;
+    s = s.trim();
+    if (!s) return true;
+    try {
+      var u = new URL(s);
+      return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function downloadCsv(csv, filename) {
+    if (!csv) return;
+    var bom = '\uFEFF';
+    var blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'export.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  var _loadingTimeoutId = null;
+  function setGlobalLoading(visible) {
+    var overlay = document.getElementById('globalLoadingOverlay');
+    if (_loadingTimeoutId) {
+      clearTimeout(_loadingTimeoutId);
+      _loadingTimeoutId = null;
+    }
+    if (visible) {
+      document.body.classList.add('loading');
+      if (overlay) { overlay.style.display = 'flex'; overlay.setAttribute('aria-hidden', 'false'); }
+      _loadingTimeoutId = setTimeout(function() {
+        _loadingTimeoutId = null;
+        showToast('info', 'This is taking longer than usual. You can keep waiting or try again later.');
+      }, 55000);
+    } else {
+      document.body.classList.remove('loading');
+      if (overlay) { overlay.style.display = 'none'; overlay.setAttribute('aria-hidden', 'true'); }
+    }
   }
 
   // ── Trust Ops Framework Multi-Select ────────────────────────────────────────
@@ -428,210 +687,6 @@
   }
 
   // ── End Trust Ops Framework Multi-Select ────────────────────────────────────
-
-  // ── Framework Explorer ──────────────────────────────────────────────────────
-
-  function fxLoadFrameworks() {
-    var clientName = document.getElementById('fxClientSelect').value;
-    if (!clientName) {
-      alert('Please select a client first.');
-      return;
-    }
-
-    state.fx.clientName = clientName;
-    state.fx.selectedFrameworkId = null;
-    state.fx.selectedControlId = null;
-    state.fx.frameworks = [];
-    state.fx.controls = [];
-
-    fxSetList('fxFrameworksList', null, 'Loading frameworks...');
-    fxSetList('fxControlsList', null, 'Select a framework to see its controls.');
-    fxSetList('fxDetailsList', null, 'Select a control to see its tests and documents.');
-    fxSetBadge('fxFrameworkCount', '');
-    fxSetBadge('fxControlCount', '');
-    fxSetBadge('fxDetailCount', '');
-
-    document.getElementById('loadFrameworksBtn').disabled = true;
-
-    google.script.run
-      .withSuccessHandler(function(frameworks) {
-        document.getElementById('loadFrameworksBtn').disabled = false;
-        state.fx.frameworks = frameworks || [];
-        fxRenderFrameworks();
-      })
-      .withFailureHandler(function(err) {
-        document.getElementById('loadFrameworksBtn').disabled = false;
-        fxSetList('fxFrameworksList', null, 'Error: ' + (err.message || String(err)));
-      })
-      .WD_getFrameworks(clientName);
-  }
-
-  function fxRenderFrameworks() {
-    var frameworks = state.fx.frameworks;
-    fxSetBadge('fxFrameworkCount', frameworks.length ? String(frameworks.length) : '');
-
-    if (!frameworks.length) {
-      fxSetList('fxFrameworksList', null, 'No frameworks found.');
-      return;
-    }
-
-    var list = document.getElementById('fxFrameworksList');
-    list.innerHTML = '';
-
-    frameworks.forEach(function(fw) {
-      var item = document.createElement('div');
-      item.className = 'fx-item';
-      item.innerHTML =
-        '<div class="fx-item-name">' + escapeHtml(fw.name) + '</div>' +
-        (fw.description ? '<div class="fx-item-desc">' + escapeHtml(fw.description) + '</div>' : '');
-      item.addEventListener('click', function() {
-        fxSelectFramework(fw);
-      });
-      list.appendChild(item);
-    });
-  }
-
-  function fxSelectFramework(fw) {
-    state.fx.selectedFrameworkId = fw.id;
-    state.fx.selectedControlId = null;
-    state.fx.controls = [];
-
-    // Highlight selected
-    Array.from(document.getElementById('fxFrameworksList').querySelectorAll('.fx-item'))
-      .forEach(function(el, i) {
-        el.classList.toggle('active', state.fx.frameworks[i] && state.fx.frameworks[i].id === fw.id);
-      });
-
-    fxSetList('fxControlsList', null, 'Loading controls...');
-    fxSetList('fxDetailsList', null, 'Select a control to see its tests and documents.');
-    fxSetBadge('fxControlCount', '');
-    fxSetBadge('fxDetailCount', '');
-
-    google.script.run
-      .withSuccessHandler(function(controls) {
-        state.fx.controls = controls || [];
-        fxRenderControls();
-      })
-      .withFailureHandler(function(err) {
-        fxSetList('fxControlsList', null, 'Error: ' + (err.message || String(err)));
-      })
-      .WD_getFrameworkControls({ clientName: state.fx.clientName, frameworkId: fw.id });
-  }
-
-  function fxRenderControls() {
-    var controls = state.fx.controls;
-    fxSetBadge('fxControlCount', controls.length ? String(controls.length) : '');
-
-    if (!controls.length) {
-      fxSetList('fxControlsList', null, 'No controls found for this framework.');
-      return;
-    }
-
-    var list = document.getElementById('fxControlsList');
-    list.innerHTML = '';
-
-    controls.forEach(function(ctrl) {
-      var item = document.createElement('div');
-      item.className = 'fx-item';
-      item.innerHTML =
-        '<div class="fx-item-name">' + escapeHtml(ctrl.name) + '</div>' +
-        (ctrl.description ? '<div class="fx-item-desc">' + escapeHtml(ctrl.description) + '</div>' : '');
-      item.addEventListener('click', function() {
-        fxSelectControl(ctrl);
-      });
-      list.appendChild(item);
-    });
-  }
-
-  function fxSelectControl(ctrl) {
-    state.fx.selectedControlId = ctrl.id;
-
-    // Highlight selected
-    Array.from(document.getElementById('fxControlsList').querySelectorAll('.fx-item'))
-      .forEach(function(el, i) {
-        el.classList.toggle('active', state.fx.controls[i] && state.fx.controls[i].id === ctrl.id);
-      });
-
-    fxSetList('fxDetailsList', null, 'Loading tests and documents...');
-    fxSetBadge('fxDetailCount', '');
-
-    google.script.run
-      .withSuccessHandler(function(details) {
-        fxRenderDetails(details);
-      })
-      .withFailureHandler(function(err) {
-        fxSetList('fxDetailsList', null, 'Error: ' + (err.message || String(err)));
-      })
-      .WD_getControlDetails({ clientName: state.fx.clientName, controlId: ctrl.id });
-  }
-
-  function fxRenderDetails(details) {
-    var tests = (details && details.tests) || [];
-    var docs = (details && details.documents) || [];
-    var total = tests.length + docs.length;
-
-    fxSetBadge('fxDetailCount', total ? String(total) : '');
-
-    var list = document.getElementById('fxDetailsList');
-    list.innerHTML = '';
-
-    if (!tests.length && !docs.length) {
-      list.innerHTML = '<div class="empty-state">No tests or documents found.</div>';
-      return;
-    }
-
-    if (tests.length) {
-      var tLabel = document.createElement('div');
-      tLabel.className = 'fx-section-label';
-      tLabel.textContent = 'Tests (' + tests.length + ')';
-      list.appendChild(tLabel);
-
-      tests.forEach(function(t) {
-        var item = document.createElement('div');
-        item.className = 'fx-detail-item';
-        item.innerHTML =
-          '<div>' + escapeHtml(t.name) + '</div>' +
-          (t.status ? '<span class="fx-status">' + escapeHtml(t.status) + '</span>' : '');
-        list.appendChild(item);
-      });
-    }
-
-    if (docs.length) {
-      var dLabel = document.createElement('div');
-      dLabel.className = 'fx-section-label';
-      dLabel.textContent = 'Documents (' + docs.length + ')';
-      list.appendChild(dLabel);
-
-      docs.forEach(function(d) {
-        var item = document.createElement('div');
-        item.className = 'fx-detail-item';
-        if (d.url) {
-          item.innerHTML = '<a href="' + escapeHtml(d.url) + '" target="_blank">' + escapeHtml(d.name) + '</a>';
-        } else {
-          item.innerHTML = '<div>' + escapeHtml(d.name) + '</div>';
-        }
-        if (d.type) {
-          item.innerHTML += '<div class="fx-item-desc">' + escapeHtml(d.type) + '</div>';
-        }
-        list.appendChild(item);
-      });
-    }
-  }
-
-  function fxSetList(id, items, emptyMsg) {
-    var el = document.getElementById(id);
-    if (!el) return;
-    el.innerHTML = '<div class="empty-state">' + escapeHtml(emptyMsg || '') + '</div>';
-  }
-
-  function fxSetBadge(id, text) {
-    var el = document.getElementById(id);
-    if (!el) return;
-    el.textContent = text;
-    el.style.display = text ? '' : 'none';
-  }
-
-  // ── End Framework Explorer ──────────────────────────────────────────────────
 
   // ── Drive Utility ────────────────────────────────────────────────────────────
 
@@ -840,17 +895,17 @@
     statusBadge.textContent = 'running';
     document.getElementById('du-output').textContent = '';
     document.getElementById('du-resultBadge').textContent = '…';
-    document.body.classList.add('loading');
+    setGlobalLoading(true);
 
     var runner = google.script.run
       .withSuccessHandler(function(result) {
-        document.body.classList.remove('loading');
+        setGlobalLoading(false);
         statusEl.className = 'du-status good';
         statusBadge.textContent = 'done';
         duShowResult(tool, result, dryRun);
       })
       .withFailureHandler(function(err) {
-        document.body.classList.remove('loading');
+        setGlobalLoading(false);
         statusEl.className = 'du-status bad';
         statusText.textContent = err && err.message ? err.message : String(err);
         statusBadge.textContent = 'error';
@@ -951,15 +1006,17 @@
   // ── Test Monitoring ──────────────────────────────────────────────────────────
 
   var tmState = {
-    loaded:   false,
-    allRows:  [],     // full dataset from server
-    filtered: [],     // rows after search filter
-    sorted:   [],     // rows after sort (all filtered, pre-pagination)
-    selected: {},     // { clientName: true } for checked rows
-    sortCol:  'totalOut',
-    sortDir:  'desc',
-    page:     1,
-    pageSize: 20
+    loaded:     false,
+    allRows:    [],   // full dataset from server
+    filtered:   [],   // rows after search filter
+    sorted:     [],   // rows after sort (all filtered, pre-pagination)
+    selected:   {},   // { clientName: true } for checked rows
+    refreshing: {},   // { clientName: true } — rows currently being refreshed
+    rowErrors:  {},   // { clientName: errorMsg }
+    sortCol:    'totalOut',
+    sortDir:    'desc',
+    page:       1,
+    pageSize:   20
   };
 
   /**
@@ -967,58 +1024,224 @@
    * Loads cached data from the DB (no Vanta call).
    */
   function tmInit() {
-    if (tmState.loaded) return; // already loaded this session
+    if (tmState.loaded) return;
     tmSetStatus('loading');
     google.script.run
       .withSuccessHandler(function(result) {
         tmState.loaded = true;
         tmHandleData(result);
         tmSetStatus('idle');
+        var n = (result && result.rows) ? result.rows.length : (tmState.allRows ? tmState.allRows.length : 0);
+        appendExecutionLog('Test Monitor', true, 'Loaded ' + n + ' clients');
       })
       .withFailureHandler(function(err) {
         tmSetStatus('idle');
+        appendExecutionLog('Test Monitor', false, err && err.message ? err.message : String(err));
         document.getElementById('tmTableBody').innerHTML =
-          '<tr><td colspan="9" class="tm-empty-cell">Error loading data: ' + escapeHtml(err.message || String(err)) + '</td></tr>';
+          '<tr><td colspan="13" class="tm-empty-cell">Error loading data: ' + escapeHtml(err.message || String(err)) + '</td></tr>';
       })
       .TM_getTestMonitorData();
   }
 
   /**
-   * Manual refresh: pulls fresh data from Vanta for all clients.
+   * Refresh All — Wave 1 only: fetch tests/docs for each client.
+   * Framework scoping is applied from FrameworkMappingDB (pre-loaded).
+   * To rebuild framework maps, use "Update Framework Scoping".
    */
   function tmRefreshAll() {
-    var btn = document.getElementById('tmRefreshBtn');
-    btn.disabled = true;
-    btn.textContent = 'Refreshing…';
-    tmSetStatus('loading');
+    var btn    = document.getElementById('tmRefreshBtn');
+    var selBtn = document.getElementById('tmRefreshSelectedBtn');
+    btn.disabled    = true;
+    btn.textContent = 'Loading tests…';
+    selBtn.disabled = true;
 
-    google.script.run
-      .withSuccessHandler(function(result) {
-        tmState.loaded = true;
-        tmHandleData(result);
-        tmSetStatus('idle');
-        btn.disabled = false;
-        btn.textContent = 'Refresh All from Vanta';
+    var names = tmState.allRows.map(function(r) { return r.clientName; });
+    if (!names.length) {
+      btn.disabled = false; btn.textContent = 'Refresh All from Vanta';
+      selBtn.disabled = false;
+      return;
+    }
 
-        var msg = 'Refreshed ' + result.refreshedCount + ' of ' + result.totalClients + ' client(s).';
-        if (result.errors && result.errors.length) {
-          msg += ' ' + result.errors.length + ' error(s): ' + result.errors.join('; ');
-        }
-        alert(msg);
-      })
-      .withFailureHandler(function(err) {
-        tmSetStatus('idle');
-        btn.disabled = false;
-        btn.textContent = 'Refresh All from Vanta';
-        showError(err);
-      })
-      .TM_refreshAllClients();
+    tmState.rowErrors = {};
+    tmRefreshSequential(names, 0, [], function(errors) {
+      if (errors.length) console.warn('TM refresh errors:', errors);
+      appendExecutionLog('Test Monitor', errors.length ? false : true, errors.length ? errors.length + ' error(s)' : 'Refresh complete');
+      btn.disabled    = false;
+      btn.textContent = 'Refresh All from Vanta';
+      tmUpdateRefreshSelectedBtn();
+    });
   }
 
-  /** Processes a server result and updates all UI components. */
+  function tmFullRefresh() {
+    var names = tmState.allRows.map(function(r) { return r.clientName; });
+    if (!names.length) { showToast('info', 'No clients to refresh. Load Test Monitor first.'); return; }
+    var btn = document.getElementById('tmRefreshBtn');
+    var fullBtn = document.getElementById('tmFullRefreshBtn');
+    var enrichBtn = document.getElementById('tmEnrichSelectedBtn');
+    var selBtn = document.getElementById('tmRefreshSelectedBtn');
+    if (fullBtn) fullBtn.disabled = true;
+    if (btn) btn.disabled = true;
+    if (enrichBtn) enrichBtn.disabled = true;
+    if (selBtn) selBtn.disabled = true;
+    tmState.rowErrors = {};
+    tmRefreshSequential(names, 0, [], function(errors1) {
+      if (errors1.length) console.warn('TM full refresh Wave 1 errors:', errors1);
+      if (fullBtn) fullBtn.textContent = 'Scoping ' + names.length + ' of ' + names.length + '\u2026';
+      tmEnrichSequential(names, 0, [], function(errors2) {
+        if (errors2.length) console.warn('TM full refresh Wave 2 errors:', errors2);
+        if (fullBtn) { fullBtn.disabled = false; fullBtn.textContent = 'Full refresh (Wave 1+2)'; }
+        if (btn) btn.disabled = false;
+        if (enrichBtn) { enrichBtn.disabled = false; enrichBtn.textContent = 'Update Framework Scoping'; }
+        tmUpdateRefreshSelectedBtn();
+        appendExecutionLog('Test Monitor', (errors1.length + errors2.length) ? false : true, (errors1.length + errors2.length) ? 'Full refresh done with errors' : 'Full refresh complete');
+        showToast('success', 'Full refresh complete.');
+      });
+    });
+  }
+
+  /**
+   * Refresh Selected — Wave 1 only for checked clients.
+   */
+  function tmRefreshSelected() {
+    var names = tmGetSelectedNames();
+    if (!names.length) { alert('No clients selected.'); return; }
+
+    var btn    = document.getElementById('tmRefreshSelectedBtn');
+    var allBtn = document.getElementById('tmRefreshBtn');
+    btn.disabled    = true;
+    btn.textContent = 'Loading tests…';
+    allBtn.disabled = true;
+
+    tmRefreshSequential(names, 0, [], function() {
+      allBtn.disabled = false;
+      tmUpdateRefreshSelectedBtn();
+    });
+  }
+
+  /**
+   * Refreshes a single client via the inline ↻ button — Wave 1 only.
+   */
+  function tmRefreshOneClient(clientName) {
+    tmRefreshSequential([clientName], 0, [], function() {});
+  }
+
+  /**
+   * Update Framework Scoping (selected clients) — Wave 2 only.
+   * Traverses frameworks → controls → tests/docs via Vanta API,
+   * rebuilds TMCache and FrameworkMappingDB, then re-applies scoping.
+   * Run this after adding a new client or when framework assignments change.
+   */
+  function tmEnrichSelected() {
+    var selected = tmGetSelectedNames();
+    var names    = selected.length ? selected : tmState.allRows.map(function(r) { return r.clientName; });
+    if (!names.length) return;
+
+    var btn    = document.getElementById('tmEnrichSelectedBtn');
+    var allBtn = document.getElementById('tmRefreshBtn');
+    var selBtn = document.getElementById('tmRefreshSelectedBtn');
+    btn.disabled    = true;
+    btn.textContent = 'Rebuilding framework maps…';
+    allBtn.disabled = true;
+    selBtn.disabled = true;
+
+    tmEnrichSequential(names, 0, [], function(errors) {
+      if (errors.length) console.warn('TM enrich errors:', errors);
+      btn.disabled    = false;
+      btn.textContent = 'Update Framework Scoping';
+      allBtn.disabled = false;
+      tmUpdateRefreshSelectedBtn();
+    });
+  }
+
+  /**
+   * Wave 1 streaming engine — calls TM_refreshClientData for each client
+   * and merges the returned row object into state immediately.
+   */
+  function tmRefreshSequential(names, index, errors, onComplete) {
+    if (index >= names.length) {
+      if (onComplete) onComplete(errors);
+      return;
+    }
+
+    var btn = document.getElementById('tmRefreshBtn');
+    if (btn) btn.textContent = 'Syncing ' + (index + 1) + ' of ' + names.length + '\u2026';
+
+    var clientName = names[index];
+    tmState.refreshing[clientName] = true;
+    tmRenderTable();
+
+    google.script.run
+      .withSuccessHandler(function(row) {
+        tmState.refreshing[clientName] = false;
+        delete tmState.rowErrors[clientName];
+        tmMergeRow(row);
+        document.getElementById('tmLastRefresh').textContent =
+          'Last refresh: ' + tmFormatLastRefresh(new Date().toISOString());
+        tmApplySearch(true);
+        tmRefreshSequential(names, index + 1, errors, onComplete);
+      })
+      .withFailureHandler(function(err) {
+        tmState.refreshing[clientName] = false;
+        tmState.rowErrors[clientName] = err.message || String(err);
+        errors.push(clientName + ': ' + (err.message || String(err)));
+        tmRenderTable();
+        tmRefreshSequential(names, index + 1, errors, onComplete);
+      })
+      .TM_refreshClientData(clientName);
+  }
+
+  /**
+   * Wave 2 streaming engine — calls TM_enrichClientFrameworks for each client.
+   * Result may be null (no frameworks configured) — skips DOM update in that case.
+   */
+  function tmEnrichSequential(names, index, errors, onComplete) {
+    if (index >= names.length) {
+      if (onComplete) onComplete(errors);
+      return;
+    }
+
+    var btn = document.getElementById('tmEnrichSelectedBtn');
+    if (btn) btn.textContent = 'Scoping ' + (index + 1) + ' of ' + names.length + '\u2026';
+
+    var clientName = names[index];
+    tmState.refreshing[clientName] = true;
+    tmRenderTable();
+
+    google.script.run
+      .withSuccessHandler(function(row) {
+        tmState.refreshing[clientName] = false;
+        delete tmState.rowErrors[clientName];
+        if (row) tmMergeRow(row); // null = no frameworks, P1 result stands
+        tmApplySearch(true);
+        tmEnrichSequential(names, index + 1, errors, onComplete);
+      })
+      .withFailureHandler(function(err) {
+        tmState.refreshing[clientName] = false;
+        tmState.rowErrors[clientName] = err.message || String(err);
+        errors.push(clientName + ': ' + (err.message || String(err)));
+        tmRenderTable();
+        tmEnrichSequential(names, index + 1, errors, onComplete);
+      })
+      .TM_enrichClientFrameworks(clientName);
+  }
+
+  /** Merges a single updated row object into tmState.allRows. */
+  function tmMergeRow(row) {
+    if (!row || !row.clientName) return;
+    var key = row.clientName.toLowerCase();
+    for (var i = 0; i < tmState.allRows.length; i++) {
+      if (tmState.allRows[i].clientName.toLowerCase() === key) {
+        tmState.allRows[i] = row;
+        return;
+      }
+    }
+  }
+
+
+  /** Processes a full server result and updates all UI components. */
   function tmHandleData(result) {
     tmState.allRows = result.rows || [];
-    tmApplySearch(); // re-applies current search filter and re-renders table (also updates stats)
+    tmApplySearch();
     document.getElementById('tmLastRefresh').textContent =
       'Last refresh: ' + tmFormatLastRefresh(result.lastRefresh);
   }
@@ -1029,10 +1252,10 @@
     var totalOutDocs  = 0;
     var sumPct        = 0;
     var below70       = 0;
-    var scopedCount   = 0; // only rows with a framework set
+    var scopedCount   = 0;
 
     rows.forEach(function(r) {
-      if (!r.frameworks) return; // unscoped rows excluded from stats
+      if (!r.frameworks) return;
       scopedCount++;
       totalOutTests += r.outTests;
       totalOutDocs  += r.outDocs;
@@ -1050,8 +1273,8 @@
 
   /** Renders the data table from tmState.sorted, applying current page. */
   function tmRenderTable() {
-    var tbody = document.getElementById('tmTableBody');
-    var COLSPAN = 10; // 1 checkbox + 9 data cols
+    var tbody   = document.getElementById('tmTableBody');
+    var COLSPAN = 13; // 1 checkbox + 12 data cols
 
     var allSorted = tmState.sorted;
     var pageRows;
@@ -1071,28 +1294,59 @@
     }
 
     tbody.innerHTML = pageRows.map(function(r) {
-      var checked = !!tmState.selected[r.clientName];
-      var noFw    = !r.frameworks;
-      return '<tr class="' + (checked ? 'tm-row-selected' : '') + '">' +
-        '<td class="tm-cb-cell"><input type="checkbox" class="tm-row-cb" data-client="' + escapeHtml(r.clientName) + '"' + (checked ? ' checked' : '') + ' /></td>' +
-        '<td class="tm-client-name">' + escapeHtml(r.clientName) + '</td>' +
-        '<td>' + (r.frameworks ? '<span class="tm-fw-badge">' + escapeHtml(r.frameworks) + '</span>' : '<span class="tm-badge tm-badge-nofw">No framework</span>') + '</td>' +
+      var checked      = !!tmState.selected[r.clientName];
+      var isRefreshing = !!tmState.refreshing[r.clientName];
+      var rowError     = tmState.rowErrors[r.clientName] || '';
+      var noFw          = !r.frameworks;
+      var isPlaceholder = (r.updatedAt == null);
+
+      // Computed values for new columns
+      var passingTests = Math.max(0, (r.activeTests || 0) - (r.outTests || 0));
+      var passingDocs  = Math.max(0, (r.activeDocs  || 0) - (r.outDocs  || 0));
+
+      // Client cell: name + inline refresh button / spinner
+      var clientCell =
+        '<td class="tm-client-cell">' +
+          '<span class="tm-client-name">' + escapeHtml(r.clientName) + '</span>' +
+          (isRefreshing
+            ? '<span class="tm-row-spinner" title="Refreshing…"></span>'
+            : '<button class="tm-row-refresh-btn" type="button" title="Refresh from Vanta" aria-label="Refresh ' + escapeHtml(r.clientName) + ' from Vanta" onclick="tmRefreshOneClient(\'' +
+                escapeHtml(r.clientName).replace(/'/g, "\\'") + '\')">↻</button>') +
+          (rowError ? '<span class="tm-row-err-icon" title="' + escapeHtml(rowError) + '">⚠</span>' : '') +
+        '</td>';
+
+      var rowCls = (checked ? 'tm-row-selected ' : '') + (isRefreshing ? 'tm-row-refreshing' : '');
+
+      return '<tr class="' + rowCls + '" data-client="' + escapeHtml(r.clientName) + '">' +
+        '<td class="tm-cb-cell"><input type="checkbox" class="tm-row-cb" data-client="' +
+          escapeHtml(r.clientName) + '"' + (checked ? ' checked' : '') + ' /></td>' +
+        clientCell +
+        '<td>' + (r.frameworks
+          ? '<span class="tm-fw-badge">' + escapeHtml(r.frameworks) + '</span>'
+          : '<span class="tm-badge tm-badge-nofw">No framework</span>') + '</td>' +
         (noFw
-          ? '<td colspan="7" class="tm-muted tm-nofw-hint">Set a framework in Client Management, then refresh.</td>'
+          ? '<td colspan="10" class="tm-muted tm-nofw-hint">Set a framework in Client Management, then refresh.</td>'
+          : isPlaceholder
+          ? '<td colspan="10" class="tm-muted tm-nofw-hint">Not yet fetched — click ↻ to refresh.</td>'
           : (
-            '<td>' + tmCountBadge(r.outTests, r.outTests > 20 ? 'danger' : r.outTests > 10 ? 'warn' : '') + '</td>' +
-            '<td>' + tmProgressCell(r.testPct) + '</td>' +
-            '<td>' + tmCountBadge(r.outDocs, r.outDocs > 20 ? 'danger' : r.outDocs > 10 ? 'warn' : '') + '</td>' +
-            '<td>' + tmProgressCell(r.docPct) + '</td>' +
+            // Tests group
+            '<td class="tm-td-tests">' + (passingTests || 0) + '</td>' +
+            '<td class="tm-td-tests tm-muted">' + (r.deactivatedTests || 0) + '</td>' +
+            '<td class="tm-td-tests">' + tmCountBadge(r.outTests, r.outTests > 20 ? 'danger' : r.outTests > 10 ? 'warn' : '') + '</td>' +
+            '<td class="tm-td-tests">' + tmProgressCell(r.testPct) + '</td>' +
+            // Docs group
+            '<td class="tm-td-docs">' + (passingDocs || 0) + '</td>' +
+            '<td class="tm-td-docs tm-muted">' + (r.deactivatedDocs || 0) + '</td>' +
+            '<td class="tm-td-docs">' + tmCountBadge(r.outDocs, r.outDocs > 20 ? 'danger' : r.outDocs > 10 ? 'warn' : '') + '</td>' +
+            '<td class="tm-td-docs">' + tmProgressCell(r.docPct) + '</td>' +
+            // Overall
             '<td>' + tmCountBadge(r.totalOut, r.totalOut > 30 ? 'danger' : r.totalOut > 15 ? 'warn' : '') + '</td>' +
-            '<td class="tm-muted">' + r.totalScope + '</td>' +
             '<td>' + tmProgressCell(r.completedPct) + '</td>'
           )
         ) +
       '</tr>';
     }).join('');
 
-    // Re-bind row checkbox events after innerHTML rebuild
     document.querySelectorAll('.tm-row-cb').forEach(function(cb) {
       cb.addEventListener('change', tmOnRowCbChange);
     });
@@ -1133,11 +1387,12 @@
 
   /** Updates the Refresh Selected button label and enabled state. */
   function tmUpdateRefreshSelectedBtn() {
-    var btn = document.getElementById('tmRefreshSelectedBtn');
-    if (!btn) return;
     var names = tmGetSelectedNames();
-    btn.disabled     = names.length === 0;
-    btn.textContent  = names.length > 0 ? 'Refresh Selected (' + names.length + ')' : 'Refresh Selected';
+    var btn   = document.getElementById('tmRefreshSelectedBtn');
+    if (btn) {
+      btn.disabled    = names.length === 0;
+      btn.textContent = names.length > 0 ? 'Refresh Selected (' + names.length + ')' : 'Refresh Selected';
+    }
   }
 
   /** Returns the array of currently selected client names. */
@@ -1145,40 +1400,6 @@
     return Object.keys(tmState.selected).filter(function(n) { return !!tmState.selected[n]; });
   }
 
-  /** Refreshes only the selected clients from Vanta. */
-  function tmRefreshSelected() {
-    var names = tmGetSelectedNames();
-    if (!names.length) { alert('No clients selected.'); return; }
-
-    var btn    = document.getElementById('tmRefreshSelectedBtn');
-    var allBtn = document.getElementById('tmRefreshBtn');
-    btn.disabled    = true;
-    allBtn.disabled = true;
-    btn.textContent = 'Refreshing…';
-    tmSetStatus('loading');
-
-    google.script.run
-      .withSuccessHandler(function(result) {
-        tmState.loaded = true;
-        tmHandleData(result);
-        tmSetStatus('idle');
-        allBtn.disabled = false;
-        tmUpdateRefreshSelectedBtn();
-
-        var msg = 'Refreshed ' + result.refreshedCount + ' of ' + result.totalClients + ' client(s).';
-        if (result.errors && result.errors.length) {
-          msg += '\n' + result.errors.length + ' error(s):\n' + result.errors.join('\n');
-        }
-        alert(msg);
-      })
-      .withFailureHandler(function(err) {
-        tmSetStatus('idle');
-        allBtn.disabled = false;
-        tmUpdateRefreshSelectedBtn();
-        showError(err);
-      })
-      .TM_refreshSelectedClients(names);
-  }
 
   /** Builds a count badge HTML string. */
   function tmCountBadge(count, level) {
@@ -1216,19 +1437,20 @@
     }
   }
 
-  /** Shows/hides the loading overlay on the table. */
+  /** Shows/hides the global loading overlay (used only for initial load). */
   function tmSetStatus(status) {
-    var btn = document.getElementById('tmRefreshBtn');
-    if (!btn) return;
     if (status === 'loading') {
-      document.body.classList.add('loading');
+      setGlobalLoading(true);
     } else {
-      document.body.classList.remove('loading');
+      setGlobalLoading(false);
     }
   }
 
-  /** Live search filter applied to the table. */
-  function tmApplySearch() {
+  /**
+   * Live search filter applied to the table.
+   * Pass keepPage=true to preserve the current page (used during streaming refresh).
+   */
+  function tmApplySearch(keepPage) {
     var q = (document.getElementById('tmSearch').value || '').trim().toLowerCase();
     tmState.filtered = q
       ? tmState.allRows.filter(function(r) {
@@ -1236,21 +1458,31 @@
                  (r.frameworks || '').toLowerCase().indexOf(q) !== -1;
         })
       : tmState.allRows.slice();
-    tmState.page = 1;
+    if (!keepPage) tmState.page = 1;
     tmApplySort();
   }
 
   var TM_SORT_LABELS = {
-    clientName:   'Client',
-    frameworks:   'Frameworks',
-    outTests:     'Outstanding Tests',
-    testPct:      'Test %',
-    outDocs:      'Outstanding Docs',
-    docPct:       'Doc %',
-    totalOut:     'Total Outstanding',
-    totalScope:   'Total In-Scope',
-    completedPct: '% Completed'
+    clientName:       'Client',
+    frameworks:       'Frameworks',
+    passingTests:     'OK',
+    deactivatedTests: 'Deactivated',
+    outTests:         'Outstanding',
+    testPct:          'Test %',
+    passingDocs:      'OK',
+    deactivatedDocs:  'Deactivated',
+    outDocs:          'Outstanding',
+    docPct:           'Doc %',
+    totalOut:         'Total Outstanding',
+    completedPct:     '% Completion'
   };
+
+  /** Returns the sort value for a row + column key (handles computed columns). */
+  function tmSortVal(r, col) {
+    if (col === 'passingTests') return Math.max(0, (r.activeTests || 0) - (r.outTests || 0));
+    if (col === 'passingDocs')  return Math.max(0, (r.activeDocs  || 0) - (r.outDocs  || 0));
+    return r[col] !== undefined ? r[col] : '';
+  }
 
   /** Sorts tmState.filtered → tmState.sorted, then re-renders. */
   function tmApplySort() {
@@ -1258,8 +1490,8 @@
     var dir = tmState.sortDir;
     var rows = tmState.filtered.slice();
     rows.sort(function(a, b) {
-      var av = a[col] !== undefined ? a[col] : '';
-      var bv = b[col] !== undefined ? b[col] : '';
+      var av = tmSortVal(a, col);
+      var bv = tmSortVal(b, col);
       if (typeof av === 'string') av = av.toLowerCase();
       if (typeof bv === 'string') bv = bv.toLowerCase();
       if (av < bv) return dir === 'asc' ? -1 : 1;
@@ -1348,6 +1580,28 @@
     if (moduleId === 'client-management') {
       cmInit();
     }
+    if (moduleId === 'control-mapping') {
+      if (typeof fdmDbLoad === 'function') fdmDbLoad();
+      var fdmSel = document.getElementById('fdmClientSelect');
+      if (state.workingClient && fdmSel) {
+        var opt = Array.from(fdmSel.options).find(function(o) { return o.value === state.workingClient; });
+        if (opt) { fdmSel.value = state.workingClient; if (typeof fdmOnClientChange === 'function') fdmOnClientChange(); }
+      }
+    }
+    if (moduleId === 'trustops-v2a' && state.workingClient) {
+      var toSel = document.getElementById('clientSelect');
+      if (toSel) {
+        var o = Array.from(toSel.options).find(function(opt) { return opt.value === state.workingClient; });
+        if (o) { toSel.value = state.workingClient; onClientChange(); }
+      }
+    }
+    if (moduleId === 'vendor-risk' && state.workingClient) {
+      var vrSel = document.getElementById('vrClientSelect');
+      if (vrSel) {
+        var o = Array.from(vrSel.options).find(function(opt) { return opt.value === state.workingClient; });
+        if (o) vrSel.value = state.workingClient;
+      }
+    }
   };
 
   var _origBindEvents = bindEvents;
@@ -1358,6 +1612,12 @@
     document.getElementById('tmSelectAll').addEventListener('change', tmOnSelectAllChange);
     document.getElementById('tmSearch').addEventListener('input', tmApplySearch);
     document.getElementById('cmRefreshBtn').addEventListener('click', cmLoadClients);
+    var auditLogBtn = document.getElementById('cmViewAuditLogBtn');
+    if (auditLogBtn) auditLogBtn.addEventListener('click', cmShowAuditLog);
+    var auditLogClose = document.getElementById('cmAuditLogCloseBtn');
+    if (auditLogClose) auditLogClose.addEventListener('click', function() {
+      document.getElementById('cmAuditLogPanel').style.display = 'none';
+    });
     document.getElementById('cmSearch').addEventListener('input', cmApplyFilter);
     document.querySelectorAll('.cm-filter-btn').forEach(function(btn) {
       btn.addEventListener('click', function() { cmSetFilter(btn.dataset.filter); });
@@ -1419,6 +1679,28 @@
         tbody.innerHTML = '<tr><td colspan="6" class="tm-empty-cell" style="color:var(--danger)">Error loading clients: ' + cmEsc(err.message || String(err)) + '</td></tr>';
       })
       .CM_getAllClientsWithMetadata();
+  }
+
+  function cmShowAuditLog() {
+    var panel = document.getElementById('cmAuditLogPanel');
+    var tbody = document.getElementById('cmAuditLogBody');
+    if (!panel || !tbody) return;
+    panel.style.display = '';
+    tbody.innerHTML = '<tr><td colspan="4" class="tm-empty-cell">Loading\u2026</td></tr>';
+    google.script.run
+      .withSuccessHandler(function(rows) {
+        if (!rows || !rows.length) {
+          tbody.innerHTML = '<tr><td colspan="4" class="tm-empty-cell">No audit entries yet.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = rows.map(function(r) {
+          return '<tr><td>' + escapeHtml(r.timestamp) + '</td><td>' + escapeHtml(r.user) + '</td><td>' + escapeHtml(r.action) + '</td><td>' + escapeHtml(r.context) + '</td></tr>';
+        }).join('');
+      })
+      .withFailureHandler(function(err) {
+        tbody.innerHTML = '<tr><td colspan="4" class="tm-empty-cell" style="color:var(--danger)">' + escapeHtml(err && err.message ? err.message : String(err)) + '</td></tr>';
+      })
+      .WD_getAuditLog(100);
   }
 
   function cmSetFilter(filter) {
@@ -1592,6 +1874,18 @@
   function cmSave(clientName) {
     var sid      = cmSafeId(clientName);
     var statusEl = document.getElementById('cm-save-status-' + sid);
+    var planLink = document.getElementById('cmf-projectPlanLink-' + sid) ? document.getElementById('cmf-projectPlanLink-' + sid).value : '';
+    var evidenceLink = document.getElementById('cmf-evidenceDropLink-' + sid) ? document.getElementById('cmf-evidenceDropLink-' + sid).value : '';
+    if (!isValidUrl(planLink)) {
+      if (statusEl) statusEl.textContent = 'Invalid Project Plan Link URL.';
+      showToast('error', 'Please enter a valid URL for Project Plan Link.');
+      return;
+    }
+    if (!isValidUrl(evidenceLink)) {
+      if (statusEl) statusEl.textContent = 'Invalid Evidence Drop Link URL.';
+      showToast('error', 'Please enter a valid URL for Evidence Drop Folder Link.');
+      return;
+    }
     if (statusEl) statusEl.textContent = 'Saving\u2026';
 
     var payload = {
@@ -1600,8 +1894,8 @@
       clientType:      document.getElementById('cmf-clientType-'       + sid).value,
       opsLead:         document.getElementById('cmf-opsLead-'          + sid).value,
       frameworks:      cmFxGetSelected(sid),
-      projectPlanLink: document.getElementById('cmf-projectPlanLink-'  + sid).value,
-      evidenceDropLink:document.getElementById('cmf-evidenceDropLink-' + sid).value,
+      projectPlanLink: planLink,
+      evidenceDropLink:evidenceLink,
       cloudSecIncluded:document.getElementById('cmf-cloudSec-'         + sid).checked
     };
 
@@ -1857,4 +2151,790 @@
   }
 
   // ── End Client Management ────────────────────────────────────────────────────
+
+  // ── Vendor Risk Management ────────────────────────────────────────────────────
+
+  var vrState = {
+    clients:  [],
+    vendors:  [],          // last loaded vendor list
+    clientName: null
+  };
+
+  function vrInit() {
+    document.getElementById('vrRefreshClientsBtn').addEventListener('click', loadClients);
+    document.getElementById('vrLoadBtn').addEventListener('click', vrLoadVendors);
+    document.getElementById('vrUploadCancelBtn').addEventListener('click', vrCloseUploadDrawer);
+    document.getElementById('vrUploadSubmitBtn').addEventListener('click', function() { vrSubmitUpload(false); });
+    document.getElementById('vrUploadReviewSubmitBtn').addEventListener('click', function() { vrSubmitUpload(true); });
+    document.getElementById('vrAutoUploadBtn').addEventListener('click', vrAutoUpload);
+    var sel = document.getElementById('vrClientSelect');
+    if (!sel) return;
+    if (state.clients && state.clients.length > 0) {
+      vrState.clients = state.clients;
+      sel.innerHTML = '<option value="">Select a client...</option>';
+      state.clients.forEach(function(c) {
+        var o = document.createElement('option');
+        o.value = c; o.textContent = c;
+        sel.appendChild(o);
+      });
+    } else {
+      loadClients();
+    }
+  }
+
+  function vrLoadClients() {
+    loadClients();
+  }
+
+  function vrLoadVendors() {
+    var clientName = document.getElementById('vrClientSelect').value;
+    state.workingClient = clientName || null;
+    var riskFilter = document.getElementById('vrRiskFilter').value;
+    if (!clientName) { vrShowStatus('Please select a client first.', 'warn'); return; }
+
+    vrState.clientName = clientName;
+    vrShowStatus('Loading vendors for ' + clientName + '...', 'info');
+    document.getElementById('vrTableWrap').style.display = 'none';
+    document.getElementById('vrSummary').style.display = 'none';
+
+    google.script.run
+      .withSuccessHandler(vrRenderDashboard)
+      .withFailureHandler(function(err) {
+        vrShowStatus('Error: ' + (err.message || String(err)), 'error');
+      })
+      .WD_getVendorDashboard({ clientName: clientName, riskFilter: riskFilter });
+  }
+
+  function vrRenderDashboard(data) {
+    vrState.vendors = data.vendors || [];
+    var vendors = vrState.vendors;
+
+    // Summary stats
+    var current = vendors.filter(function(v) { return v.reviewStatus === 'Current'; }).length;
+    var needsReview = data.needsReview || 0;
+    document.getElementById('vrStatTotalNum').textContent = data.total || 0;
+    document.getElementById('vrStatNeedsReview').textContent = needsReview;
+    document.getElementById('vrStatCurrent').textContent = current;
+    document.getElementById('vrSummary').style.display = '';
+
+    // Show/hide auto-upload button
+    var autoBtn = document.getElementById('vrAutoUploadBtn');
+    autoBtn.style.display = needsReview > 0 ? '' : 'none';
+
+    // Table label
+    document.getElementById('vrTableLabel').textContent =
+      vendors.length + ' vendor' + (vendors.length !== 1 ? 's' : '') +
+      ' · ' + data.clientName + ' · fetched ' + vrFmtTime(data.fetchedAt);
+
+    // Render rows
+    var tbody = document.getElementById('vrTableBody');
+    tbody.innerHTML = '';
+
+    if (!vendors.length) {
+      var tr = document.createElement('tr');
+      tr.innerHTML = '<td colspan="7" style="text-align:center;color:var(--muted,#888);padding:24px;">No vendors found for this filter.</td>';
+      tbody.appendChild(tr);
+    } else {
+      vendors.forEach(function(v) {
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td><strong>' + vrEsc(v.name) + '</strong>' +
+            (v.url ? '<br><span style="font-size:11px;color:var(--muted,#888);">' + vrEsc(v.url) + '</span>' : '') +
+          '</td>' +
+          '<td>' + vrEsc(v.category || '—') + '</td>' +
+          '<td>' + vrRiskBadge(v.riskLevel) + '</td>' +
+          '<td>' + vrEsc(v.status || '—') + '</td>' +
+          '<td>' + vrFmtDate(v.latestReviewDate) + '</td>' +
+          '<td>' + vrStatusLabel(v.reviewStatus) + '</td>' +
+          '<td><button class="vr-action-btn" onclick="vrOpenUploadDrawer(' +
+            JSON.stringify(v.id) + ',' + JSON.stringify(v.name) + ',' +
+            JSON.stringify(v.reviews && v.reviews.length ? v.reviews[0].id : '') +
+          ')">Upload Doc</button></td>';
+        tbody.appendChild(tr);
+      });
+    }
+
+    document.getElementById('vrTableWrap').style.display = '';
+    document.getElementById('vrStatus').style.display = 'none';
+  }
+
+  function vrRiskBadge(level) {
+    var cls = {
+      Critical: 'vr-badge-critical',
+      High:     'vr-badge-high',
+      Medium:   'vr-badge-medium',
+      Low:      'vr-badge-low'
+    }[level] || 'vr-badge-unknown';
+    return '<span class="vr-badge ' + cls + '">' + vrEsc(level || 'Unknown') + '</span>';
+  }
+
+  function vrStatusLabel(status) {
+    var cls = {
+      'Current':        'vr-status-current',
+      'Due Soon':       'vr-status-soon',
+      'Overdue':        'vr-status-overdue',
+      'Never Reviewed': 'vr-status-never'
+    }[status] || '';
+    return '<span class="' + cls + '">' + vrEsc(status || '—') + '</span>';
+  }
+
+  function vrOpenUploadDrawer(vendorId, vendorName, latestReviewId) {
+    document.getElementById('vrUploadVendorId').value   = vendorId || '';
+    document.getElementById('vrUploadReviewId').value   = latestReviewId || '';
+    document.getElementById('vrUploadVendorName').value = vendorName || '';
+    document.getElementById('vrUploadTitle').value      = '';
+    document.getElementById('vrUploadFileId').value     = '';
+    document.getElementById('vrUploadStatus').style.display = 'none';
+
+    var reviewBtn = document.getElementById('vrUploadReviewSubmitBtn');
+    reviewBtn.style.display = latestReviewId ? '' : 'none';
+
+    var drawer = document.getElementById('vrUploadDrawer');
+    drawer.style.display = '';
+    drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function vrCloseUploadDrawer() {
+    document.getElementById('vrUploadDrawer').style.display = 'none';
+  }
+
+  function vrSubmitUpload(toReview) {
+    var vendorId      = document.getElementById('vrUploadVendorId').value;
+    var reviewId      = document.getElementById('vrUploadReviewId').value;
+    var documentTitle = document.getElementById('vrUploadTitle').value.trim();
+    var driveFileId   = document.getElementById('vrUploadFileId').value.trim();
+    var documentType  = document.getElementById('vrUploadDocType').value;
+    var statusEl      = document.getElementById('vrUploadStatus');
+
+    if (!documentTitle) { vrUploadMsg('Document title is required.', 'error'); return; }
+    if (!driveFileId)   { vrUploadMsg('Drive file ID is required.', 'error'); return; }
+
+    vrUploadMsg('Uploading...', 'info');
+
+    var fn = toReview ? 'WD_uploadDocumentToReview' : 'WD_uploadDocumentToVendor';
+    var payload = {
+      clientName:    vrState.clientName,
+      vendorId:      vendorId,
+      driveFileId:   driveFileId,
+      documentTitle: documentTitle,
+      documentType:  documentType
+    };
+    if (toReview) payload.securityReviewId = reviewId;
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        vrUploadMsg('Uploaded successfully.', 'success');
+      })
+      .withFailureHandler(function(err) {
+        vrUploadMsg('Upload failed: ' + (err.message || String(err)), 'error');
+      })
+      [fn](payload);
+  }
+
+  function vrAutoUpload() {
+    if (!vrState.clientName) return;
+    vrShowStatus('Auto-uploading docs for overdue Critical/High vendors...', 'info');
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        var msg = 'Auto-upload complete. Uploaded: ' + result.uploaded.length +
+          ', Skipped: ' + result.skipped.length +
+          ', Errors: ' + result.errors.length + '.';
+        if (result.errors.length) {
+          msg += ' Errors: ' + result.errors.map(function(e) { return e.vendorName + ' — ' + e.error; }).join('; ');
+        }
+        vrShowStatus(msg, result.errors.length ? 'warn' : 'success');
+      })
+      .withFailureHandler(function(err) {
+        vrShowStatus('Auto-upload failed: ' + (err.message || String(err)), 'error');
+      })
+      .WD_autoUploadVendorDocs({ clientName: vrState.clientName, onlyOverdue: true });
+  }
+
+  function vrShowStatus(msg, type) {
+    var el = document.getElementById('vrStatus');
+    el.textContent = msg;
+    el.style.display = '';
+    el.style.background = type === 'error'   ? '#fde8e8' :
+                          type === 'warn'    ? '#fff3cd' :
+                          type === 'success' ? '#d4edda' : '';
+    el.style.color      = type === 'error'   ? '#b54747' :
+                          type === 'warn'    ? '#856404' :
+                          type === 'success' ? '#155724' : '';
+  }
+
+  function vrUploadMsg(msg, type) {
+    var el = document.getElementById('vrUploadStatus');
+    el.textContent = msg;
+    el.style.display = '';
+    el.style.color = type === 'error' ? '#b54747' : type === 'success' ? '#155724' : '';
+  }
+
+  function vrFmtDate(iso) {
+    if (!iso) return '<span style="color:var(--muted,#888);">—</span>';
+    try {
+      var d = new Date(iso);
+      if (isNaN(d)) return vrEsc(iso);
+      return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    } catch(e) { return vrEsc(iso); }
+  }
+
+  function vrFmtTime(iso) {
+    if (!iso) return '';
+    try {
+      var d = new Date(iso);
+      return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    } catch(e) { return ''; }
+  }
+
+  function vrEsc(str) {
+    return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // Hook into app init — called after DOMContentLoaded
+  document.addEventListener('DOMContentLoaded', vrInit);
+
+  // ── End Vendor Risk Management ────────────────────────────────────────────────
+
+  // ── Control Mapping ──────────────────────────────────────────────────────────
+
+  var fdmState = {
+    clientName:       null,
+    frameworkId:      null,
+    frameworkName:    null,
+    frameworks:       [],
+    frameworksLoaded: false,
+    loading:          false,
+    data:             null
+  };
+
+  function fdmOnClientChange() {
+    var el = document.getElementById('fdmClientSelect');
+    if (!el) return;
+    var client = el.value;
+    state.workingClient = client || null;
+    fdmState.clientName       = client;
+    fdmState.frameworkId      = null;
+    fdmState.frameworks       = [];
+    fdmState.frameworksLoaded = false;
+    fdmState.data             = null;
+
+    var fwSel   = document.getElementById('fdmFrameworkSelect');
+    var loadBtn = document.getElementById('fdmLoadBtn');
+    fwSel.innerHTML = '<option value="">Loading frameworks\u2026</option>';
+    fwSel.disabled  = true;
+    loadBtn.disabled = true;
+
+    document.getElementById('fdm-statusBadge').textContent = 'idle';
+    document.getElementById('fdm-resultBadge').textContent = '—';
+    document.getElementById('fdm-cache-info').style.display = 'none';
+    fdmSetResults('<div class="fdm-empty">Loading frameworks\u2026</div>');
+
+    if (!client) {
+      fwSel.innerHTML = '<option value="">Select a client first</option>';
+      fdmSetResults('<div class="fdm-empty">Select a client and framework to load the mapping.</div>');
+      return;
+    }
+
+    google.script.run
+      .withSuccessHandler(function(frameworks) {
+        fdmState.frameworks       = frameworks || [];
+        fdmState.frameworksLoaded = true;
+        fdmRenderFrameworkSelect();
+        fdmSetResults('<div class="fdm-empty">Select a framework to load the mapping.</div>');
+      })
+      .withFailureHandler(function(err) {
+        fwSel.innerHTML = '<option value="">Error loading frameworks</option>';
+        showError(err);
+      })
+      .WD_getFrameworks(client);
+  }
+
+  function fdmRenderFrameworkSelect() {
+    var fwSel = document.getElementById('fdmFrameworkSelect');
+    if (!fwSel) return;
+    fwSel.innerHTML = '<option value="">Select Framework</option>';
+    fdmState.frameworks.forEach(function(fw) {
+      var opt = document.createElement('option');
+      opt.value       = fw.id;
+      opt.textContent = fw.name;
+      fwSel.appendChild(opt);
+    });
+    fwSel.disabled = false;
+    var loadBtn = document.getElementById('fdmLoadBtn');
+    if (loadBtn) loadBtn.disabled = false;
+  }
+
+  function fdmOnFrameworkChange() {
+    var sel = document.getElementById('fdmFrameworkSelect');
+    if (!sel) return;
+    fdmState.frameworkId   = sel.value;
+    fdmState.frameworkName = sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : '';
+    fdmState.data          = null;
+    document.getElementById('fdm-cache-info').style.display = 'none';
+    document.getElementById('fdm-resultBadge').textContent  = '—';
+    document.getElementById('fdm-statusBadge').textContent  = 'idle';
+
+    if (fdmState.frameworkId) {
+      // Auto-load on framework select
+      fdmLoad();
+    } else {
+      fdmSetResults('<div class="fdm-empty">Select a framework to load the mapping.</div>');
+    }
+  }
+
+  function fdmLoad() {
+    if (!document.getElementById('fdmLoadBtn')) return;
+    if (!fdmState.clientName)  { alert('Please select a client.');    return; }
+    if (!fdmState.frameworkId) { alert('Please select a framework.'); return; }
+
+    var forceEl = document.getElementById('fdmForceRefresh');
+    var forceRefresh = forceEl ? forceEl.checked : false;
+
+    fdmState.loading = true;
+    var statusBadge = document.getElementById('fdm-statusBadge');
+    if (statusBadge) statusBadge.textContent = 'loading\u2026';
+    var loadBtn = document.getElementById('fdmLoadBtn');
+    if (loadBtn) loadBtn.disabled = true;
+    setGlobalLoading(true);
+    fdmSetResults('<div class="fdm-empty">Loading\u2026 this may take a moment for large frameworks.</div>');
+
+    var syncInfo = document.getElementById('fdm-sync-info');
+    var syncText = document.getElementById('fdm-syncText');
+    if (syncInfo) syncInfo.style.display = '';
+    if (syncText) syncText.textContent = 'Syncing to FrameworkMappingDB\u2026';
+
+    // Load map then sync DB from same data (no second API burst — avoids bandwidth quota; ensures docs get into DB)
+    google.script.run
+      .withSuccessHandler(function(result) {
+        setGlobalLoading(false);
+        fdmState.loading = false;
+        fdmState.data    = result;
+        var lb = document.getElementById('fdmLoadBtn');
+        if (lb) lb.disabled = false;
+        fdmRenderDocMap(result);
+        if (syncText) syncText.textContent = 'Syncing to DB from loaded data\u2026';
+        google.script.run
+          .withSuccessHandler(function(syncResult) {
+            if (syncText) syncText.textContent = 'DB synced \u2014 +' + syncResult.added +
+              ' new, ' + syncResult.updated + ' updated';
+            appendExecutionLog('Framework Mapping', true, '+' + syncResult.added + ' new, ' + syncResult.updated + ' updated');
+          })
+          .withFailureHandler(function(err) {
+            console.warn('FrameworkMappingDB sync failed:', err);
+            if (syncText) syncText.textContent = 'DB sync failed: ' +
+              (err && err.message ? err.message : String(err));
+            appendExecutionLog('Framework Mapping DB', false, err && err.message ? err.message : String(err));
+          })
+          .WD_syncFrameworkMappingDBFromDocMap({
+            clientName:    fdmState.clientName,
+            frameworkName: fdmState.frameworkName,
+            controls:      result.controls || []
+          });
+      })
+      .withFailureHandler(function(err) {
+        setGlobalLoading(false);
+        fdmState.loading = false;
+        var lb = document.getElementById('fdmLoadBtn');
+        if (lb) lb.disabled = false;
+        var sb = document.getElementById('fdm-statusBadge');
+        if (sb) sb.textContent = 'error';
+        appendExecutionLog('Framework Mapping', false, err && err.message ? err.message : String(err));
+        fdmSetResults('<div class="fdm-empty" style="color:var(--danger);">Error: ' +
+          escapeHtml(err && err.message ? err.message : String(err)) + '</div>');
+      })
+      .WD_getFrameworkDocMap({
+        clientName:   fdmState.clientName,
+        frameworkId:  fdmState.frameworkId,
+        forceRefresh: forceRefresh
+      });
+  }
+
+  function fdmRenderDocMap(result) {
+    var resultsEl = document.getElementById('fdm-results');
+    if (!resultsEl) return;
+    var controls   = result.controls || [];
+    var totalTests = 0;
+    var totalDocs  = 0;
+    controls.forEach(function(c) {
+      totalTests += (c.tests     || []).length;
+      totalDocs  += (c.documents || []).length;
+    });
+
+    var resultBadge = document.getElementById('fdm-resultBadge');
+    var statusBadge = document.getElementById('fdm-statusBadge');
+    if (resultBadge) resultBadge.textContent = controls.length + ' controls';
+    if (statusBadge) statusBadge.textContent = result.fromCache ? 'cached' : 'live';
+
+    var cacheInfo  = document.getElementById('fdm-cache-info');
+    var cacheText  = document.getElementById('fdm-cacheText');
+    var cacheBadge = document.getElementById('fdm-cacheBadge');
+    if (cacheInfo) { cacheInfo.style.display = ''; cacheInfo.className = 'du-status' + (result.fromCache ? '' : ' good'); }
+    var timeStr = result.cachedAt ? new Date(result.cachedAt).toLocaleTimeString() : '—';
+    if (cacheText) cacheText.textContent = (result.fromCache ? 'Cached result' : 'Fetched live') +
+      ' \u00b7 ' + totalTests + ' test' + (totalTests !== 1 ? 's' : '') +
+      ' \u00b7 ' + totalDocs  + ' doc'  + (totalDocs  !== 1 ? 's' : '');
+    if (cacheBadge) cacheBadge.textContent = timeStr;
+
+    if (!controls.length) {
+      fdmSetResults('<div class="fdm-empty">No controls found for this framework.</div>');
+      return;
+    }
+
+    var html = '<div class="fdm-summary">';
+    html += '<span>' + controls.length + ' controls &middot; ' +
+            totalTests + ' tests &middot; ' + totalDocs + ' documents</span>';
+    html += '<span style="font-size:11px;">' + (result.fromCache ? 'Cached' : 'Live') +
+            ' as of ' + timeStr + '</span>';
+    html += '</div>';
+
+    controls.forEach(function(ctrl, idx) {
+      var tests = ctrl.tests     || [];
+      var docs  = ctrl.documents || [];
+      var rowId = 'fdm-ctrl-' + idx;
+
+      html += '<div class="fdm-ctrl-row" id="' + rowId + '">';
+      html += '<div class="fdm-ctrl-head" onclick="fdmToggle(\'' + rowId + '\')">';
+      html += '<span class="fdm-ctrl-arrow">&#9658;</span>';
+      html += '<span class="fdm-ctrl-name">' + escapeHtml(ctrl.name) + '</span>';
+      if (ctrl.category) {
+        html += '<span class="fdm-cat-badge">' + escapeHtml(ctrl.category) + '</span>';
+      }
+      html += '<span class="fdm-ctrl-meta">' +
+              tests.length + ' test' + (tests.length !== 1 ? 's' : '') +
+              ' &middot; ' +
+              docs.length  + ' doc'  + (docs.length  !== 1 ? 's' : '') + '</span>';
+      html += '</div>';
+
+      html += '<div class="fdm-docs-list">';
+
+      if (tests.length) {
+        html += '<div class="fdm-section-label">Tests</div>';
+        tests.forEach(function(test) {
+          html += '<div class="fdm-doc-item">';
+          html += '<span class="fdm-doc-name">' + escapeHtml(test.name) + '</span>';
+          if (test.status) {
+            html += '<span class="fdm-doc-type">' + escapeHtml(test.status) + '</span>';
+          }
+          html += '</div>';
+        });
+      }
+
+      if (docs.length) {
+        html += '<div class="fdm-section-label">Documents</div>';
+        docs.forEach(function(doc) {
+          html += '<div class="fdm-doc-item">';
+          if (doc.url) {
+            html += '<a href="' + escapeHtml(doc.url) + '" target="_blank">' +
+                    escapeHtml(doc.name) + '</a>';
+          } else {
+            html += '<span class="fdm-doc-name">' + escapeHtml(doc.name) + '</span>';
+          }
+          if (doc.type) {
+            html += '<span class="fdm-doc-type">' + escapeHtml(doc.type) + '</span>';
+          }
+          html += '</div>';
+        });
+      }
+
+      if (!tests.length && !docs.length) {
+        html += '<div class="fdm-no-docs">No tests or documents mapped to this control.</div>';
+      }
+
+      html += '</div></div>';
+    });
+
+    resultsEl.innerHTML = html;
+  }
+
+  function fdmToggle(rowId) {
+    var row = document.getElementById(rowId);
+    if (row) row.classList.toggle('open');
+  }
+
+  function fdmSetResults(html) {
+    var el = document.getElementById('fdm-results');
+    if (el) el.innerHTML = html;
+  }
+
+  function fdmReset() {
+    var clientSel = document.getElementById('fdmClientSelect');
+    var fwSel = document.getElementById('fdmFrameworkSelect');
+    var loadBtn = document.getElementById('fdmLoadBtn');
+    if (clientSel) clientSel.value = '';
+    if (fwSel) {
+      fwSel.innerHTML = '<option value="">Select a client first</option>';
+      fwSel.disabled = true;
+    }
+    if (loadBtn) loadBtn.disabled = true;
+    var forceEl = document.getElementById('fdmForceRefresh');
+    if (forceEl) forceEl.checked = false;
+    var sb = document.getElementById('fdm-statusBadge');
+    var rb = document.getElementById('fdm-resultBadge');
+    if (sb) sb.textContent = 'idle';
+    if (rb) rb.textContent = '—';
+    var cacheInfo = document.getElementById('fdm-cache-info');
+    var syncInfo = document.getElementById('fdm-sync-info');
+    var syncText = document.getElementById('fdm-syncText');
+    if (cacheInfo) cacheInfo.style.display = 'none';
+    if (syncInfo) syncInfo.style.display = 'none';
+    if (syncText) syncText.textContent = '—';
+    fdmState.clientName   = null;
+    fdmState.frameworkId  = null;
+    fdmState.frameworkName = null;
+    fdmState.frameworks   = [];
+    fdmState.data         = null;
+    fdmSetResults('<div class="fdm-empty">Select a client and framework to load the mapping.</div>');
+  }
+
+  // ── Framework Mapping DB table (all clients) ───────────────────────────────────
+  var fdmDbState = {
+    rows: [],
+    frameworkColumns: [],
+    lastUpdated: '',
+    filtered: [],
+    sorted: [],
+    sortCol: 'name',
+    sortDir: 'asc',
+    page: 1,
+    pageSize: 20,
+    frameworkFilter: ''
+  };
+
+  var FDMDB_SORT_LABELS = { name: 'Name', type: 'Type' };
+
+  function fdmDbLoad() {
+    document.getElementById('fdm-db-fetchAllBtn').disabled = true;
+    document.getElementById('fdm-db-lastUpdated').textContent = 'Loading…';
+    google.script.run
+      .withSuccessHandler(function(data) {
+        fdmDbState.rows = data.rows || [];
+        fdmDbState.frameworkColumns = data.frameworkColumns || [];
+        fdmDbState.lastUpdated = data.lastUpdated || '';
+        document.getElementById('fdm-db-lastUpdated').textContent = fdmDbState.lastUpdated
+          ? new Date(fdmDbState.lastUpdated).toLocaleString()
+          : 'Never';
+        fdmDbPopulateFrameworkFilter();
+        fdmDbApplyFilter();
+      })
+      .withFailureHandler(function(err) {
+        document.getElementById('fdm-db-lastUpdated').textContent = 'Error';
+        document.getElementById('fdm-db-fetchAllBtn').disabled = false;
+        showError(err);
+      })
+      .WD_getFrameworkMappingDBForUI();
+    fdmDbPopulateClientFilter();
+  }
+
+  function fdmDbPopulateClientFilter() {
+    var sel = document.getElementById('fdm-db-clientFilter');
+    if (!sel) return;
+    var cur = sel.value;
+    sel.innerHTML = '<option value="">—</option>';
+    (state.clients || []).forEach(function(c) {
+      var opt = document.createElement('option');
+      opt.value = c;
+      opt.textContent = c;
+      sel.appendChild(opt);
+    });
+    if (cur && state.clients && state.clients.indexOf(cur) >= 0) sel.value = cur;
+  }
+
+  function fdmDbPopulateFrameworkFilter() {
+    var sel = document.getElementById('fdm-db-frameworkFilter');
+    if (!sel) return;
+    var cur = sel.value;
+    sel.innerHTML = '<option value="">All</option>';
+    (fdmDbState.frameworkColumns || []).forEach(function(fw) {
+      var opt = document.createElement('option');
+      opt.value = fw;
+      opt.textContent = fw;
+      sel.appendChild(opt);
+    });
+    if (cur && fdmDbState.frameworkColumns && fdmDbState.frameworkColumns.indexOf(cur) >= 0) sel.value = cur;
+    else fdmDbState.frameworkFilter = '';
+  }
+
+  function fdmDbApplyFilter() {
+    var fw = (document.getElementById('fdm-db-frameworkFilter') && document.getElementById('fdm-db-frameworkFilter').value) || '';
+    fdmDbState.frameworkFilter = fw;
+    if (!fw) {
+      fdmDbState.filtered = fdmDbState.rows.slice();
+    } else {
+      fdmDbState.filtered = fdmDbState.rows.filter(function(r) {
+        return r.frameworks && r.frameworks[fw];
+      });
+    }
+    fdmDbState.page = 1;
+    fdmDbApplySort();
+    document.getElementById('fdm-db-fetchAllBtn').disabled = false;
+  }
+
+  function fdmDbApplySort() {
+    var col = fdmDbState.sortCol;
+    var dir = fdmDbState.sortDir;
+    var rows = fdmDbState.filtered.slice();
+    rows.sort(function(a, b) {
+      var av = col === 'name' ? (a.name || '') : (a.type || '');
+      var bv = col === 'name' ? (b.name || '') : (b.type || '');
+      av = String(av).toLowerCase();
+      bv = String(bv).toLowerCase();
+      if (av < bv) return dir === 'asc' ? -1 : 1;
+      if (av > bv) return dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    fdmDbState.sorted = rows;
+    fdmDbRenderTable();
+    fdmDbRenderPagination();
+    fdmDbUpdateSortIcons();
+  }
+
+  function fdmDbOnHeaderClick(col) {
+    if (fdmDbState.sortCol === col) {
+      fdmDbState.sortDir = fdmDbState.sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      fdmDbState.sortCol = col;
+      fdmDbState.sortDir = 'asc';
+    }
+    fdmDbState.page = 1;
+    fdmDbApplySort();
+  }
+
+  function fdmDbUpdateSortIcons() {
+    var thead = document.getElementById('fdm-db-thead');
+    if (!thead) return;
+    thead.querySelectorAll('.fdm-db-th-sort').forEach(function(th) {
+      var col = th.dataset.sort;
+      var label = FDMDB_SORT_LABELS[col] || col;
+      th.textContent = label + (col === fdmDbState.sortCol ? (fdmDbState.sortDir === 'asc' ? ' ▲' : ' ▼') : '');
+      th.classList.toggle('tm-th-sort-active', col === fdmDbState.sortCol);
+    });
+  }
+
+  function fdmDbRenderTable() {
+    var thead = document.getElementById('fdm-db-thead');
+    var tbody = document.getElementById('fdm-db-tbody');
+    var cols = fdmDbState.frameworkColumns;
+    var totalCols = 3 + (cols ? cols.length : 0);
+
+    thead.innerHTML = '<tr>' +
+      '<th>#</th>' +
+      '<th class="fdm-db-th-sort tm-th-sort" data-sort="name" role="button" tabindex="0">Name</th>' +
+      '<th class="fdm-db-th-sort tm-th-sort" data-sort="type" role="button" tabindex="0">Type</th>' +
+      (cols || []).map(function(c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('') +
+      '</tr>';
+
+    thead.querySelectorAll('.fdm-db-th-sort').forEach(function(th) {
+      th.addEventListener('click', function() { fdmDbOnHeaderClick(th.dataset.sort); });
+      th.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fdmDbOnHeaderClick(th.dataset.sort); }
+      });
+    });
+
+    var sorted = fdmDbState.sorted;
+    var ps = fdmDbState.pageSize;
+    var pageRows = ps === 0 ? sorted : sorted.slice((fdmDbState.page - 1) * ps, (fdmDbState.page - 1) * ps + ps);
+
+    if (!pageRows.length) {
+      tbody.innerHTML = '<tr><td colspan="' + totalCols + '" class="fdm-db-empty">' +
+        (fdmDbState.rows.length ? 'No rows match the framework filter.' : 'No rows. Load data first.') + '</td></tr>';
+      return;
+    }
+
+    var startNum = (fdmDbState.page - 1) * (ps || 1) + 1;
+    tbody.innerHTML = pageRows.map(function(r, idx) {
+      var num = startNum + idx;
+      var cells = [
+        num,
+        escapeHtml(r.name || ''),
+        escapeHtml(r.type || '')
+      ].concat((cols || []).map(function(fw) {
+        return r.frameworks && r.frameworks[fw] ? '<span class="fdm-db-check">✓</span>' : '—';
+      }));
+      return '<tr><td>' + cells.join('</td><td>') + '</td></tr>';
+    }).join('');
+  }
+
+  function fdmDbRenderPagination() {
+    var el = document.getElementById('fdm-db-pagination');
+    if (!el) return;
+    var total = fdmDbState.sorted.length;
+    var ps = fdmDbState.pageSize;
+    var totalPages = ps === 0 ? 1 : Math.max(1, Math.ceil(total / ps));
+    var curPage = fdmDbState.page;
+
+    if (total === 0) { el.innerHTML = ''; return; }
+
+    var start = ps === 0 ? 1 : (curPage - 1) * ps + 1;
+    var end = ps === 0 ? total : Math.min(curPage * ps, total);
+
+    el.innerHTML =
+      '<div class="tm-page-info">' + start + '–' + end + ' of ' + total + ' rows</div>' +
+      '<div class="tm-page-controls">' +
+        '<select id="fdm-db-pageSize" class="tm-page-size">' +
+          '<option value="20"' + (ps === 20 ? ' selected' : '') + '>20 per page</option>' +
+          '<option value="50"' + (ps === 50 ? ' selected' : '') + '>50 per page</option>' +
+          '<option value="100"' + (ps === 100 ? ' selected' : '') + '>100 per page</option>' +
+          '<option value="0"' + (ps === 0 ? ' selected' : '') + '>All</option>' +
+        '</select>' +
+        '<button class="ghost-btn tm-page-btn" id="fdm-db-pagePrev"' + (curPage <= 1 ? ' disabled' : '') + '>←</button>' +
+        '<span class="tm-page-num">Page ' + curPage + ' of ' + totalPages + '</span>' +
+        '<button class="ghost-btn tm-page-btn" id="fdm-db-pageNext"' + (curPage >= totalPages ? ' disabled' : '') + '>→</button>' +
+      '</div>';
+
+    var pageSizeEl = document.getElementById('fdm-db-pageSize');
+    if (pageSizeEl) pageSizeEl.addEventListener('change', function() {
+      fdmDbState.pageSize = parseInt(this.value, 10);
+      fdmDbState.page = 1;
+      fdmDbRenderTable();
+      fdmDbRenderPagination();
+    });
+    var prevBtn = document.getElementById('fdm-db-pagePrev');
+    if (prevBtn) prevBtn.addEventListener('click', function() {
+      if (fdmDbState.page > 1) { fdmDbState.page--; fdmDbRenderTable(); fdmDbRenderPagination(); }
+    });
+    var nextBtn = document.getElementById('fdm-db-pageNext');
+    if (nextBtn) nextBtn.addEventListener('click', function() {
+      var tp = fdmDbState.pageSize === 0 ? 1 : Math.ceil(fdmDbState.sorted.length / fdmDbState.pageSize);
+      if (fdmDbState.page < tp) { fdmDbState.page++; fdmDbRenderTable(); fdmDbRenderPagination(); }
+    });
+  }
+
+  function fdmDbFetchAll() {
+    var btn = document.getElementById('fdm-db-fetchAllBtn');
+    btn.disabled = true;
+    btn.textContent = 'Syncing…';
+    document.getElementById('fdm-db-lastUpdated').textContent = 'Syncing…';
+    google.script.run
+      .withSuccessHandler(function(result) {
+        btn.disabled = false;
+        btn.textContent = 'Fetch for all clients';
+        var errCount = (result.errors || []).length;
+        var syncedCount = (result.synced || []).length;
+        if (errCount) {
+          document.getElementById('fdm-db-lastUpdated').textContent = 'Done (some errors)';
+          showError(result.errors.map(function(e) { return e.clientName + ': ' + e.message; }).join('; '));
+        } else {
+          document.getElementById('fdm-db-lastUpdated').textContent = result.lastSyncedAt
+            ? new Date(result.lastSyncedAt).toLocaleString()
+            : '—';
+        }
+        fdmDbLoad();
+      })
+      .withFailureHandler(function(err) {
+        btn.disabled = false;
+        btn.textContent = 'Fetch for all clients';
+        document.getElementById('fdm-db-lastUpdated').textContent = 'Error';
+        showError(err);
+      })
+      .WD_syncFrameworkMappingDBAllClients();
+  }
+
+  document.getElementById('fdm-db-fetchAllBtn').addEventListener('click', fdmDbFetchAll);
+
+  var fdmDbFwFilter = document.getElementById('fdm-db-frameworkFilter');
+  if (fdmDbFwFilter) fdmDbFwFilter.addEventListener('change', fdmDbApplyFilter);
+
+  // ── End Control Mapping ──────────────────────────────────────────────────────
+
 </script>

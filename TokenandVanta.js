@@ -1,7 +1,7 @@
 /** TokenAndVanta.gs **/
 
 function WD_tryGetClientsFromTokenService_() {
-  const url = APP_CONFIG.TOKEN_SERVICE_URL.replace(/\/$/, '') + '?action=clients';
+  const url = (getConfigValue('TOKEN_SERVICE_URL') || '').replace(/\/$/, '') + '?action=clients';
 
   try {
     const resp = UrlFetchApp.fetch(url, {
@@ -29,12 +29,11 @@ function WD_tryGetClientsFromTokenService_() {
 }
 
 function WD_tryGetClientsFromSheet_() {
-  if (!APP_CONFIG.CENTRAL_API_SPREADSHEET_ID) return [];
+  if (!getConfigValue('CENTRAL_API_SPREADSHEET_ID')) return [];
 
-  const ss = SpreadsheetApp.openById(APP_CONFIG.CENTRAL_API_SPREADSHEET_ID);
-  const sh = APP_CONFIG.CENTRAL_API_SHEET_NAME
-    ? ss.getSheetByName(APP_CONFIG.CENTRAL_API_SHEET_NAME)
-    : ss.getSheets()[0];
+  const ss = SpreadsheetApp.openById(getConfigValue('CENTRAL_API_SPREADSHEET_ID'));
+  const sheetName = getConfigValue('CENTRAL_API_SHEET_NAME');
+  const sh = sheetName ? ss.getSheetByName(sheetName) : ss.getSheets()[0];
 
   if (!sh) return [];
 
@@ -56,23 +55,32 @@ function WD_tryGetClientsFromSheet_() {
   return Array.from(new Set(out)).sort();
 }
 
+// Token cache TTL: 5 minutes. Reduces repeated token-service calls per client per execution.
+var TOKEN_CACHE_TTL_SECONDS = 300;
+
 function WD_getVantaAccessToken_(clientName) {
-  const url = APP_CONFIG.TOKEN_SERVICE_URL.replace(/\/$/, '') +
+  var normalized = String(clientName || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+  var cacheKey   = 'token_' + (normalized || 'default');
+  var cache      = CacheService.getScriptCache();
+  var cached     = cache.get(cacheKey);
+  if (cached) return cached;
+
+  var url = (getConfigValue('TOKEN_SERVICE_URL') || '').replace(/\/$/, '') +
     '?action=token&client=' + encodeURIComponent(clientName);
 
-  const resp = UrlFetchApp.fetch(url, {
+  var resp = UrlFetchApp.fetch(url, {
     method: 'get',
     muteHttpExceptions: true
   });
 
-  const code = resp.getResponseCode();
-  const text = resp.getContentText() || '';
+  var code = resp.getResponseCode();
+  var text = resp.getContentText() || '';
 
   if (code < 200 || code >= 300) {
     throw new Error('Token service HTTP ' + code + ': ' + text.substring(0, 300));
   }
 
-  let json;
+  var json;
   try {
     json = JSON.parse(text);
   } catch (e) {
@@ -83,7 +91,9 @@ function WD_getVantaAccessToken_(clientName) {
     throw new Error('Token service did not return access_token.');
   }
 
-  return json.access_token;
+  var token = json.access_token;
+  cache.put(cacheKey, token, TOKEN_CACHE_TTL_SECONDS);
+  return token;
 }
 
 function WD_fetchAllTests_(token) {
@@ -241,7 +251,8 @@ function WD_fetchJsonWithRetry_(req) {
       return JSON.parse(text);
     }
 
-    const retriable = (code === 429 || (code >= 500 && code < 600));
+    const bandwidthQuota = (code === 403 || code === 429) && /bandwidth\s*quota\s*exceeded/i.test(text);
+    const retriable = bandwidthQuota || (code === 429 || (code >= 500 && code < 600));
     if (retriable && attempt < APP_CONFIG.MAX_RETRIES) {
       const headers = resp.getAllHeaders && resp.getAllHeaders();
       const retryAfter = headers && (headers['Retry-After'] || headers['retry-after']);
@@ -249,7 +260,7 @@ function WD_fetchJsonWithRetry_(req) {
       let delay = retryAfter
         ? Number(retryAfter) * 1000
         : APP_CONFIG.BACKOFF_BASE_MS * Math.pow(2, attempt);
-
+      if (bandwidthQuota && delay < 5000) delay = 5000;
       delay += Math.floor(Math.random() * 250);
       Utilities.sleep(Math.max(delay, APP_CONFIG.RATE_LIMIT_MIN_MS));
       attempt++;
@@ -269,10 +280,16 @@ function WD_encodeCursorSafely_(cursor) {
 
 // ── Framework Explorer API functions ──────────────────────────────────────────
 
-function WD_fetchFrameworks_(token) {
+/**
+ * Fetches frameworks from Vanta.
+ * @param {string} token
+ * @param {boolean} [includeOutOfScope] - If true, request may include frameworks not in scope (Vanta API may support includeOutOfScope or similar; ignored if unsupported).
+ */
+function WD_fetchFrameworks_(token, includeOutOfScope) {
   const headers = { Accept: 'application/json', Authorization: 'Bearer ' + token };
   return WD_pagedGetAll_(function(cursor) {
     let url = APP_CONFIG.VANTA_API_BASE + '/frameworks?pageSize=' + APP_CONFIG.API_PAGE_SIZE;
+    if (includeOutOfScope) url += '&includeOutOfScope=true';
     if (cursor) url += '&pageCursor=' + WD_encodeCursorSafely_(cursor);
     return url;
   }, headers);
@@ -303,6 +320,86 @@ function WD_fetchControlDocuments_(token, controlId) {
     if (cursor) url += '&pageCursor=' + WD_encodeCursorSafely_(cursor);
     return url;
   }, headers);
+}
+
+/**
+ * Fetches all controls for a framework with their tests and documents (batched).
+ * Used by Framework Mapping UI (WD_getFrameworkDocMap).
+ * @param {string} token
+ * @param {string} frameworkId
+ * @returns {Array<{ id: string, name: string, category: string, tests: Array<{id,name,status}>, documents: Array<{id,name,type,url}> }>}
+ */
+function WD_fetchFrameworkDocMapDirect_(token, frameworkId) {
+  const headers = { Accept: 'application/json', Authorization: 'Bearer ' + token };
+  const controls = WD_fetchFrameworkControls_(token, frameworkId);
+  const BATCH = 20;
+  const out = [];
+
+  for (var i = 0; i < controls.length; i += BATCH) {
+    var batch = controls.slice(i, i + BATCH);
+    var testReqs = batch.map(function(ctrl) {
+      return {
+        url: APP_CONFIG.VANTA_API_BASE + '/controls/' + encodeURIComponent(ctrl.id) + '/tests?pageSize=' + APP_CONFIG.API_PAGE_SIZE,
+        method: 'get',
+        headers: headers,
+        muteHttpExceptions: true
+      };
+    });
+    var docReqs = batch.map(function(ctrl) {
+      return {
+        url: APP_CONFIG.VANTA_API_BASE + '/controls/' + encodeURIComponent(ctrl.id) + '/documents?pageSize=' + APP_CONFIG.API_PAGE_SIZE,
+        method: 'get',
+        headers: headers,
+        muteHttpExceptions: true
+      };
+    });
+
+    var testResponses = UrlFetchApp.fetchAll(testReqs);
+    if (i + BATCH < controls.length) Utilities.sleep(APP_CONFIG.RATE_LIMIT_MIN_MS);
+    var docResponses = UrlFetchApp.fetchAll(docReqs);
+    if (i + BATCH < controls.length) Utilities.sleep(APP_CONFIG.RATE_LIMIT_MIN_MS);
+
+    for (var j = 0; j < batch.length; j++) {
+      var ctrl = batch[j];
+      var tests = [];
+      var docs = [];
+      if (testResponses[j] && testResponses[j].getResponseCode() >= 200 && testResponses[j].getResponseCode() < 300) {
+        var tBody = JSON.parse(testResponses[j].getContentText() || '{}');
+        var tData = (tBody.results && tBody.results.data) ? tBody.results.data : (tBody.data || []);
+        if (Array.isArray(tData)) {
+          tData.forEach(function(t) {
+            tests.push({
+              id: t.id || t.testId || '',
+              name: t.name || t.displayName || t.id || t.testId || '',
+              status: t.status || ''
+            });
+          });
+        }
+      }
+      if (docResponses[j] && docResponses[j].getResponseCode() >= 200 && docResponses[j].getResponseCode() < 300) {
+        var dBody = JSON.parse(docResponses[j].getContentText() || '{}');
+        var dData = (dBody.results && dBody.results.data) ? dBody.results.data : (dBody.data || []);
+        if (Array.isArray(dData)) {
+          dData.forEach(function(d) {
+            docs.push({
+              id: d.id || d.documentId || '',
+              name: d.name || d.title || d.displayName || d.id || d.documentId || '',
+              type: d.type || d.category || '',
+              url: d.url || d.link || ''
+            });
+          });
+        }
+      }
+      out.push({
+        id: ctrl.id,
+        name: ctrl.name || ctrl.displayName || ctrl.id,
+        category: ctrl.category || '',
+        tests: tests,
+        documents: docs
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -433,6 +530,41 @@ function WD_fetchAllDocuments_(token) {
 }
 
 /**
+ * Fetch all documents regardless of status (for Test Monitor full client sheets).
+ * Queries each status bucket and dedupes by ID.
+ * Statuses per Vanta API: Needs document, Needs update, Not relevant, OK.
+ */
+function WD_fetchAllDocsAllStatuses_(token) {
+  var headers = { Accept: 'application/json', Authorization: 'Bearer ' + token };
+  var STATUSES = ['Needs document', 'Needs update', 'Not relevant', 'OK'];
+  var byId = {};
+
+  STATUSES.forEach(function(st) {
+    try {
+      var docs = WD_pagedGetAll_(function(cursor) {
+        var url = APP_CONFIG.VANTA_API_BASE + '/documents?pageSize=' + APP_CONFIG.API_PAGE_SIZE +
+          '&statusMatchesAny=' + encodeURIComponent(st);
+        if (cursor) url += '&pageCursor=' + WD_encodeCursorSafely_(cursor);
+        return url;
+      }, headers);
+
+      docs.forEach(function(d) {
+        if (!d) return;
+        var id = d.id || d.documentId;
+        if (!id) return;
+        if (!d.id) d.id = id;
+        if (!d.status) d.status = st;
+        if (!byId[id]) byId[id] = d;
+      });
+    } catch (e) {
+      Logger.log('WD_fetchAllDocsAllStatuses_: skipped status "' + st + '": ' + (e && e.message ? e.message : String(e)));
+    }
+  });
+
+  return Object.keys(byId).map(function(id) { return byId[id]; });
+}
+
+/**
  * Convenience wrapper: framework IDs → document ID set.
  */
 function WD_fetchDocumentIdsForFrameworks_(token, frameworkIds) {
@@ -446,7 +578,7 @@ function WD_fetchDocumentIdsForFrameworks_(token, frameworkIds) {
  * Calls an action on the token service and returns the parsed JSON response.
  */
 function WD_callTokenService_(action, extraParams) {
-  let url = APP_CONFIG.TOKEN_SERVICE_URL.replace(/\/$/, '') + '?action=' + encodeURIComponent(action);
+  let url = (getConfigValue('TOKEN_SERVICE_URL') || '').replace(/\/$/, '') + '?action=' + encodeURIComponent(action);
   if (extraParams) {
     Object.keys(extraParams).forEach(function(k) {
       url += '&' + encodeURIComponent(k) + '=' + encodeURIComponent(extraParams[k]);

@@ -70,15 +70,15 @@ appsscript.json      # Project manifest (OAuth scopes, timezone, etc.)
 ```
 
 **IMPORTANT - Configuration Pattern:**
-- **NEVER hardcode configuration values** in code files
-- **ALL configuration goes in Config.js**
-- Use Config.js helper functions: `getConfig()`, `isAdminEmail()`, `getDemoPasswordForUser()`, `getSensitivityValue()`
+- **NEVER hardcode configuration values** in code files (except non-sensitive defaults in Config.js)
+- **ALL configuration goes in Config.js**; deploy-specific or sensitive values can override via Script Properties (File > Project properties > Script properties)
+- Use Config.js helpers: `getConfig(key)` (returns Script Property or APP_CONFIG fallback), `getConfigValue(key)` (same, with empty string fallback), `isAdmin()` (checks Session.getActiveUser().getEmail() against Script Property ADMIN_EMAILS, comma-separated; empty = allow all)
 - When adding new config values:
-  1. Add constant to Config.js
-  2. Add to getConfig() switch statement
-  3. Create helper function if needed
+  1. Add constant to APP_CONFIG in Config.js
+  2. If overridable per deploy, use getConfigValue('KEY') in code; optional: set Script Property KEY to override
+  3. Create helper function if needed (e.g. isAdmin for guarding sensitive operations)
   4. Update this documentation
-- Config.js constants are accessible globally across all .gs files
+- Sensitive operations (e.g. Fetch for all clients, Client Management save) are guarded with isAdmin(); set ADMIN_EMAILS in Script Properties to restrict
 
 **Data storage:**
 - **Persistent data**: Google Sheets, Drive, PropertiesService
@@ -123,7 +123,7 @@ appsscript.json      # Project manifest (OAuth scopes, timezone, etc.)
 
 **Working with HTML:**
 - **IMPORTANT**: Use `createTemplateFromFile().evaluate()` instead of `createHtmlOutputFromFile()` when pages need to include other HTML files
-- Create a helper `include(filename)` function in Code.js for including HTML partials (like Styles.html)
+- The web app entry point `doGet()` and the helper `include(filename)` live in WebApp.js (not Code.js). Use `include()` for HTML partials (like Styles.html).
 - In HTML templates, use `<?!= include('Filename') ?>` to include other HTML files (NOT `HtmlService.createHtmlOutputFromFile()`)
 - **Best Practice**: Centralize styles in a dedicated `Styles.html` and include it in all pages using `<?!= include('Styles') ?>`
 - Use `google.script.run` to call server functions from client
